@@ -48,6 +48,30 @@ GPU load (unload models) when the rate climbs. That is what `bake_meter.sh` does
 3. Run `bake_meter.sh` from cron: warn at 50 errors/hour, shed load at 200/hour.
 4. True zero requires removing Thunderbolt from the path (native PCIe host).
 
+## 6. The danger state outlives the traffic (2026-07-10, second night)
+
+After an error storm (237 errors/hour), a **fatal error struck ~30 minutes
+later while the link was nearly idle** (no model loaded, no generation —
+verified in Ollama logs). Treat an elevated error count as a lingering danger
+state, not just a live-traffic signal: after a DANGER reading, keep the link
+quiet well beyond the storm itself. BakeMeter had been reporting DANGER for
+25 minutes before this freeze — the early warning works.
+
+## 7. Panic-type freezes can self-heal via kdump
+
+With `crashkernel=...` configured (Ubuntu kdump-tools), one freeze turned out
+to be a kernel panic: the crash kernel took over and **the machine rebooted
+itself, services and all — zero human touch**. Hard hangs still need a power
+cycle, but you can widen the self-healing net:
+
+```
+echo "kernel.hung_task_panic=1
+kernel.panic=30" | sudo tee /etc/sysctl.d/99-bakemeter-selfheal.conf && sudo sysctl --system
+```
+
+This converts silent-hang freezes into panics, which kdump then turns into a
+clean automatic reboot.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not
