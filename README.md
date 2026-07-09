@@ -34,6 +34,15 @@ Thresholds and behavior are configurable via environment variables.
 3. Run BakeMeter as the safety net.
 4. The only true cure is a native PCIe slot. Until then, this keeps you alive.
 
+## To fellow Mac Pro 2013 (trash can) owners
+
+Your machine can still be a real LLM server in 2026 — ours runs a RTX 3090
+over TB2 daily. Hard-won tips: the eGPU boots **only on the bottom TB bus**,
+it must be **connected before power-on** (hot-plug is never recognized), and
+the freezes you hit during long generations are the link-error disease above —
+measurable, predictable, and survivable with BakeMeter. Don't throw the can
+away. 🗑✨
+
 ## Status / contributing
 
 Born 2026-07-10 from a night of controlled experiments on a Mac Pro 2013
