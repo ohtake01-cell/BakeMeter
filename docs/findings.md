@@ -72,6 +72,11 @@ kernel.panic=30" | sudo tee /etc/sysctl.d/99-bakemeter-selfheal.conf && sudo sys
 This converts silent-hang freezes into panics, which kdump then turns into a
 clean automatic reboot.
 
+**Drill result (deliberate `sysrq-trigger` crash, 2026-07-10):** SSH back in
+**92 s**, all services (Ollama, web UI, cron) back in **114 s**, zero human
+intervention. Test yours the same way before you trust it:
+`echo c | sudo tee /proc/sysrq-trigger` (crashes the machine on purpose).
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not
