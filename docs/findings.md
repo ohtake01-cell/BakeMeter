@@ -77,6 +77,25 @@ clean automatic reboot.
 intervention. Test yours the same way before you trust it:
 `echo c | sudo tee /proc/sysrq-trigger` (crashes the machine on purpose).
 
+## 8. journalctl undercounts AER by ~34x — read sysfs counters instead
+
+Kernel rate-limiting ("N callbacks suppressed") silently drops most AER log
+lines under load. Measured on the same window: `journalctl -k` grep counted
+**297** errors while the hardware counter
+(`/sys/bus/pci/devices/<dev>/aer_dev_correctable`, `BadDLLP` row) had
+accumulated **9,979** — a ~34x gap. Any log-based meter dramatically
+underestimates the storm exactly when it matters.
+
+Two design consequences, both applied in `scripts/bake_meter.sh` v2:
+
+- **Count deltas of the sysfs counter per sample interval**, not log lines.
+  The counter resets on reboot; treat a backwards jump as "count since boot".
+- **Avoid trailing-window log queries for state.** A 1-hour `--since` window
+  kept reporting DANGER (and re-unloading models every 5 minutes) for up to an
+  hour *after* a burst had already stopped — a stale echo. Interval deltas go
+  quiet immediately. Unload models only on the transition into DANGER, then
+  re-check `api/ps` and record honestly whether the unload actually worked.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not
