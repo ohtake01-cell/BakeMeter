@@ -36,6 +36,26 @@ storms have continued with no model loaded (findings §9). Thresholds are
 provisional and configurable via environment variables — collect a few days
 of CSV and recalibrate on your rig.
 
+## Gating heavy GPU work & per-phase measurement
+
+Two small companions to the meter:
+
+```bash
+# Refuse to start heavy GPU work (model swap, image gen, batch job) unless
+# the meter says it's safe. Blocks on DANGER/COOLDOWN, and fail-closed when
+# the meter isn't running or its state is stale.
+bash scripts/gate_check.sh && run_my_heavy_gpu_job
+
+# Attribute errors to workload phases: snapshot the AER counters + GPU state
+# with a label before/after each phase, then diff the JSONL lines.
+bash scripts/aer_snapshot.sh before_load img-042
+bash scripts/aer_snapshot.sh after_load  img-042
+```
+
+`gate_check.sh` exit codes: `0` allow (WARN allows with a warning unless
+`BM_GATE_STRICT=1`), `2` blocked (DANGER/COOLDOWN), `3` blocked because
+there's no fresh meter state — don't start heavy work blind.
+
 ## Near-zero-freeze operating policy (from measured data)
 
 1. Keep your main model resident (`keep_alive -1`) — model swaps cost
