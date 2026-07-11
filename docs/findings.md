@@ -10,7 +10,8 @@ to disk (evidence survives a freeze), then controlled load patterns. 2026-07-10.
   TB link — starting at **13 W** GPU draw, long before any power spike.
 - Sustained image-generation load (hot, steady, little PCIe traffic after the
   initial upload) produces almost no errors. Long LLM generations (cool, but
-  continuous PCIe traffic) produce them constantly.
+  continuous PCIe traffic) produce them constantly. (But an image *pipeline*
+  that reloads its model per image is a different story — see §9.)
 - Occasionally one error is **Uncorrectable (Fatal)** → the GPU falls off the
   bus and the kernel hangs. That is the "random" freeze.
 
@@ -87,6 +88,36 @@ journal's 1-hour window also keeps an alarm ringing long after a burst has
 stopped. `bake_meter.sh` v2 therefore reads the sysfs counters and alarms on
 the **delta per 5-minute run** (provisional thresholds: warn 1000, danger
 5000 — recalibrate from your own CSV), keeping journalctl only as a fallback.
+
+## 9. Image generation: the reload loop is the storm, not the compute (2026-07-11)
+
+Re-measured with the sysfs counters, §1's "image generation produces almost
+no errors" needs a caveat: it holds only while the model stays resident. A
+FLUX (ComfyUI) pipeline that unloaded models after every image and re-staged
+them for the next (~16 GB: CLIP 4.8 GB + FLUX 11.3 GB, per image) cost
+**~38,800 BadDLLP across a 6-image hour** (concurrent LLM traffic included).
+The compute is still cheap — the *transfers* are the exposure. Total errors ≈
+(errors/GB) × (GB moved), and the per-GB rate is a property of the TB link
+that software cannot change (§3), so the only software lever is GB moved:
+
+1. Keep the image model resident for the whole image session instead of the
+   per-image unload/reload round trip (staged bytes for images 2..N drop ~80%).
+2. Route "redo/again" requests by simple rules instead of waking the big chat
+   model for triage.
+3. Cache reference-image descriptions so the vision model isn't reloaded per
+   retry.
+
+Two more cautions from the same day's logs:
+
+- **"Idle = 0" (§2) is not universal.** We recorded a no-load burst
+  (13,856 → 20,253 errors per 5 min with no model resident) and one eGPU bus
+  drop near idle. Transfer reduction shrinks exposure; it does not buy
+  immunity.
+- **One quiet sample after DANGER is not recovery.** A gate that reopened
+  after a single quiet 5-minute reading let three images through, and the
+  link re-entered DANGER twice within 40 minutes. Hence v2.1's COOLDOWN
+  level (60 min after the last DANGER *and* a quiet last ~30 min), and
+  hence gates should fail closed for heavy loads when the meter is stale.
 
 ## Mac Pro 2013 specific notes
 

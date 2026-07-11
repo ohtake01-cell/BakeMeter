@@ -37,7 +37,10 @@ measured a fatal error striking ~30 min *after* the link went quiet
 (findings §6), and a real incident re-entered DANGER twice within 40 min of
 "recovering". Every run also atomically writes a
 machine-readable `bake_state.json` so other tools can gate heavy GPU work
-(e.g. refuse image generation while `level` is `DANGER` or `COOLDOWN`).
+(e.g. refuse image generation while `level` is `DANGER` or `COOLDOWN`, and
+also when the file is stale — no meter means no permission for heavy loads).
+If your image pipeline reloads its model per image, stop: that reload loop
+is the storm (findings §9) — keep the model resident across the session.
 Thresholds, paths and behavior are configurable via environment variables —
 see the script header.
 

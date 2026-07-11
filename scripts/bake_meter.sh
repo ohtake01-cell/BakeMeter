@@ -161,8 +161,10 @@ fi
 
 # --- publish machine-readable state (atomic) -------------------------------
 # External gates (web UI, image-generation pipelines) should read this file
-# and refuse heavy GPU loads while level is DANGER or COOLDOWN — and treat a
-# stale file (epoch older than ~10 min) as "meter not running", fail-open.
+# and refuse heavy GPU loads while level is DANGER or COOLDOWN. Treat a stale
+# file (epoch older than ~10 min) as "meter not running" and fail CLOSED for
+# heavy loads like image generation — flying blind is how storms slip
+# through — while letting lightweight interactive traffic continue.
 TMP="$STATE_JSON.tmp.$$"
 printf '{"level":"%s","delta":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
   "$LEVEL" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
