@@ -32,10 +32,13 @@
 #                    counts ~34x the journal counts; recalibrate from your CSV.
 #   BM_WARN          journalctl-fallback warn threshold /hour   (50)
 #   BM_DANGER        journalctl-fallback danger threshold /hour (200)
-#   BM_COOLDOWN_MIN  minutes to stay in COOLDOWN after DANGER   (30)
+#   BM_COOLDOWN_MIN  minutes to stay in COOLDOWN after DANGER   (60)
 #                    — measured: the danger state outlives the traffic; one
 #                    fatal error struck ~30 min after the link went idle
-#                    (docs/findings.md §6). Gates should treat COOLDOWN as
+#                    (docs/findings.md §6), so the default holds 2x that.
+#                    COOLDOWN also does not lift while any WARN/DANGER
+#                    reading sits in the last 6 samples (~30 min at the
+#                    5-min cron cadence). Gates should treat COOLDOWN as
 #                    "no heavy GPU loads yet".
 #   BM_SHED          "1" = unload all Ollama models on entering DANGER (1)
 #   BM_OLLAMA        Ollama API base               (http://localhost:11434)
@@ -53,7 +56,7 @@ WARN_DELTA="${BM_WARN_DELTA:-1000}"
 DANGER_DELTA="${BM_DANGER_DELTA:-5000}"
 WARN_H="${BM_WARN:-50}"
 DANGER_H="${BM_DANGER:-200}"
-COOLDOWN_MIN="${BM_COOLDOWN_MIN:-30}"
+COOLDOWN_MIN="${BM_COOLDOWN_MIN:-60}"
 SHED="${BM_SHED:-1}"
 OLLAMA="${BM_OLLAMA:-http://localhost:11434}"
 SYSFS="${BM_SYSFS_ROOT:-/sys/bus/pci/devices}"   # overridable for testing
@@ -108,11 +111,18 @@ if [ "$N" -ge "$DANGER_AT" ]; then LEVEL=DANGER
 elif [ "$N" -ge "$WARN_AT" ]; then LEVEL=WARN; fi
 
 # The danger state outlives the traffic (findings §6): hold COOLDOWN for
-# BM_COOLDOWN_MIN minutes after the last DANGER reading.
+# BM_COOLDOWN_MIN minutes after the last DANGER reading, and even after the
+# timer expires do not lift it until the recent samples are quiet (no
+# WARN/DANGER in the last 6 rows — a real incident re-entered DANGER twice
+# within 40 min of "recovering").
 [ "$LEVEL" = "DANGER" ] && LAST_DANGER=$EPOCH
 COOLDOWN_UNTIL=$((LAST_DANGER + COOLDOWN_MIN * 60))
-if [ "$LEVEL" != "DANGER" ] && [ "$LAST_DANGER" -gt 0 ] && [ "$EPOCH" -lt "$COOLDOWN_UNTIL" ]; then
-  LEVEL=COOLDOWN
+if [ "$LEVEL" != "DANGER" ] && [ "$LAST_DANGER" -gt 0 ]; then
+  if [ "$EPOCH" -lt "$COOLDOWN_UNTIL" ]; then
+    LEVEL=COOLDOWN
+  elif tail -6 "$LOG" 2>/dev/null | grep -qE ",(WARN|DANGER),"; then
+    LEVEL=COOLDOWN
+  fi
 fi
 
 echo "$TS,$DELTA,$LEVEL,$TOTAL,$JOURNAL_1H,$SOURCE" >> "$LOG"

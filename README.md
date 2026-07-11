@@ -31,9 +31,11 @@ back to journalctl when sysfs is unavailable, and says so in the CSV.
 
 On crossing the danger threshold it unloads all Ollama models **once, on the
 transition** (traffic stops, freeze avoided; models reload on next use),
-verifies they actually unloaded, and then holds a **COOLDOWN** level for 30
-minutes — because we measured a fatal error striking ~30 min *after* the
-link went quiet (findings §6). Every run also atomically writes a
+verifies they actually unloaded, and then holds a **COOLDOWN** level for 60
+minutes (and until the last ~30 min of samples are quiet) — because we
+measured a fatal error striking ~30 min *after* the link went quiet
+(findings §6), and a real incident re-entered DANGER twice within 40 min of
+"recovering". Every run also atomically writes a
 machine-readable `bake_state.json` so other tools can gate heavy GPU work
 (e.g. refuse image generation while `level` is `DANGER` or `COOLDOWN`).
 Thresholds, paths and behavior are configurable via environment variables —
