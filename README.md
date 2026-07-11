@@ -23,16 +23,30 @@ load before the crash.
 MODEL=llama3:8b bash scripts/burst_test.sh
 ```
 
-`bake_meter.sh` logs errors/hour to CSV, warns at 50/h, and at 200/h unloads
-all Ollama models (traffic stops, freeze avoided; models reload on next use).
-Thresholds and behavior are configurable via environment variables.
+`bake_meter.sh` (v2) reads the kernel's **sysfs AER counters**
+(`aer_dev_correctable` → BadDLLP) as per-interval deltas — `journalctl`
+rate-limits AER messages and undercounted by **~34×** in our measurements
+(findings §8). It logs to CSV, writes a machine-readable `bake_state.json`
+for external gates, warns at 1,000 errors/interval, and at 5,000 unloads all
+Ollama models — once, on the transition into DANGER (traffic stops, freeze
+avoided; models reload on next use), then verifies the unload actually
+happened. After any DANGER it holds a `COOLDOWN` level for 60 min: in our
+logs a fatal error struck ~30 min *after* traffic had stopped, and error
+storms have continued with no model loaded (findings §9). Thresholds are
+provisional and configurable via environment variables — collect a few days
+of CSV and recalibrate on your rig.
 
 ## Near-zero-freeze operating policy (from measured data)
 
-1. Keep your main model resident (`keep_alive -1`) — model swaps cost ~3–5 errors/GB.
-2. Cap generation length — token streaming costs ~1–3 errors/second.
+1. Keep your main model resident (`keep_alive -1`) — model swaps cost
+   ~130 errors/GB measured at the sysfs counter (~3–5/GB in the rate-limited
+   journal).
+2. Cap generation length — token streaming produces errors continuously.
 3. Run BakeMeter as the safety net.
-4. The only true cure is a native PCIe slot. Until then, this keeps you alive.
+4. After any DANGER reading, keep the link quiet for at least an hour —
+   the danger state outlives the traffic, and idle is not always safe
+   (findings §6, §9).
+5. The only true cure is a native PCIe slot. Until then, this keeps you alive.
 
 ## To fellow Mac Pro 2013 (trash can) owners
 
