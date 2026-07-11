@@ -26,6 +26,11 @@ A 17 GB model swap ≈ 50–80 errors. One minute of generation ≈ 60–180 err
 Hundreds of correctable errors per day are survivable; the fatal one is a rare
 draw whose probability scales with total traffic.
 
+> **2026-07-11 correction:** these rates were measured via `journalctl`, which
+> undercounts by ~34× due to kernel rate limiting (see §8). The *relative*
+> comparisons hold; the absolute numbers are ~34× higher (e.g. ~133 errors/GB
+> measured via sysfs on a 19.3 GB load).
+
 ## 3. Swapping parts does not help
 
 Same error rate (~100 per test run) after replacing, one at a time:
@@ -76,6 +81,59 @@ clean automatic reboot.
 **92 s**, all services (Ollama, web UI, cron) back in **114 s**, zero human
 intervention. Test yours the same way before you trust it:
 `echo c | sudo tee /proc/sysrq-trigger` (crashes the machine on purpose).
+
+## 8. journalctl undercounts ~34× — read the sysfs AER counters (2026-07-10/11)
+
+The kernel **rate-limits AER console output** (`... callbacks suppressed` in
+dmesg), so counting journal lines misses most errors. Measured on the same
+machine at the same moment:
+
+| Source | Count |
+|---|---|
+| `journalctl -k` last 1 h | 297 |
+| sysfs `aer_dev_correctable` BadDLLP (24 min after reboot) | 9,979 |
+
+≈ **34× undercount**. Next day the sysfs total read 170,848 while the
+journal's 1-hour count was 0. The Linux AER docs confirm: console output is
+rate-limited, statistics are exposed in sysfs. Two practical notes:
+
+- Read `/sys/bus/pci/devices/<bdf>/aer_dev_correctable` (BadDLLP line) as a
+  **delta** between samples. The counter increments on the device that
+  *observed* the error — the link partner (a TB/PCIe bridge above the GPU),
+  not the GPU itself.
+- Per-GB recalibration: a 19.3 GB model load produced 2,565 sysfs errors ≈
+  **133 errors/GB** — consistent with the journal-based 3–5/GB × 34, though
+  treat 34× as a rough factor, not a calibration constant.
+
+Consequences for BakeMeter (v2, this repo):
+- Primary meter = sysfs BadDLLP delta per 5-min interval; journalctl kept
+  only as a reference column and fallback.
+- Provisional thresholds: WARN 1,000 / DANGER 5,000 per 5-min delta
+  (replacing the journal-based 50/200 per hour). Recalibrate on your rig.
+- First run records a baseline only (the boot-time backlog is cumulative,
+  not fresh traffic); a counter that goes backwards means a reboot.
+- Shedding fires **once, on the transition into DANGER** — the old
+  every-interval shedding turned out to be repeated no-ops triggered by an
+  hour-window echo of an already-finished storm.
+- After shedding, re-check `api/ps` and report leftovers honestly.
+
+## 9. "Idle = 0" is not universal — cooldown is mandatory (2026-07-11)
+
+§2's "Idle = 0" was true during the controlled tests of 2026-07-10, but it is
+not a universal law:
+
+- After unloading **all** models, 5-minute deltas of **13,856 and then
+  20,253 errors** were recorded with zero GPU load (09:50–10:00).
+- At 11:20 the eGPU **fell off the bus at GPU 0%**, no model loaded, with
+  normal error levels in the minutes before.
+
+Together with §6 (fatal error ~30 min after traffic stopped), this means a
+DANGER reading marks a **lingering danger state**: reducing traffic reduces
+exposure, but does not instantly make the link safe. BakeMeter v2 therefore
+holds a `COOLDOWN` level after any DANGER — proposed policy: no heavy GPU
+work until **≥60 min since the last DANGER and all samples in the last
+30 min below WARN**. (60 min = 2× the observed 30-min lag as an engineering
+safety margin, not a measured optimum.)
 
 ## Mac Pro 2013 specific notes
 
