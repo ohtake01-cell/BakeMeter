@@ -82,6 +82,14 @@ clean automatic reboot.
 intervention. Test yours the same way before you trust it:
 `echo c | sudo tee /proc/sysrq-trigger` (crashes the machine on purpose).
 
+**Production record (2026-07-11 23:57):** the disease fired for real and the
+net caught it — second zero-touch recovery. Observed fatal signature: a PCIe
+**power-state transition failure (D0→D3hot)** → device drops off the bus →
+kernel crash → kdump reboots the machine, all services back automatically
+(crash dump preserved in /var/crash/). Post-reboot, the v2 meter's
+counter-reset handling worked as designed: it logged a small `sysfs_reset`
+delta instead of false-alarming on the counter change.
+
 ## 8. journalctl undercounts ~34× — read the sysfs AER counters (2026-07-10/11)
 
 The kernel **rate-limits AER console output** (`... callbacks suppressed` in
