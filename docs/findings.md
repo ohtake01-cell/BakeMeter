@@ -77,6 +77,17 @@ clean automatic reboot.
 intervention. Test yours the same way before you trust it:
 `echo c | sudo tee /proc/sysrq-trigger` (crashes the machine on purpose).
 
+## 8. journalctl undercounts the errors ~34x under load (2026-07-10)
+
+The kernel rate-limits AER log lines ("callbacks suppressed"), so grepping
+`journalctl` — our original method — misses most events during bursts. On the
+same interval we measured **297 events in the journal vs 9,979 on the sysfs
+counter** (`aer_dev_correctable`, `BadDLLP` row) — a ~34x undercount. The
+journal's 1-hour window also keeps an alarm ringing long after a burst has
+stopped. `bake_meter.sh` v2 therefore reads the sysfs counters and alarms on
+the **delta per 5-minute run** (provisional thresholds: warn 1000, danger
+5000 — recalibrate from your own CSV), keeping journalctl only as a fallback.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not

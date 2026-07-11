@@ -23,9 +23,21 @@ load before the crash.
 MODEL=llama3:8b bash scripts/burst_test.sh
 ```
 
-`bake_meter.sh` logs errors/hour to CSV, warns at 50/h, and at 200/h unloads
-all Ollama models (traffic stops, freeze avoided; models reload on next use).
-Thresholds and behavior are configurable via environment variables.
+`bake_meter.sh` (v2.1) reads the kernel's AER `BadDLLP` counters from sysfs
+and logs the **delta per run** to CSV. Don't trust `journalctl` counts: under
+load the kernel rate-limits AER log lines and we measured a **~34x
+undercount** vs the sysfs counters (see findings §8) — the script only falls
+back to journalctl when sysfs is unavailable, and says so in the CSV.
+
+On crossing the danger threshold it unloads all Ollama models **once, on the
+transition** (traffic stops, freeze avoided; models reload on next use),
+verifies they actually unloaded, and then holds a **COOLDOWN** level for 30
+minutes — because we measured a fatal error striking ~30 min *after* the
+link went quiet (findings §6). Every run also atomically writes a
+machine-readable `bake_state.json` so other tools can gate heavy GPU work
+(e.g. refuse image generation while `level` is `DANGER` or `COOLDOWN`).
+Thresholds, paths and behavior are configurable via environment variables —
+see the script header.
 
 ## Near-zero-freeze operating policy (from measured data)
 
