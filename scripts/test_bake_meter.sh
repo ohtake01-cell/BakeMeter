@@ -64,7 +64,7 @@ meter; check "delta 6000 = DANGER"              "6000,DANGER,sysfs"
 counter 107000
 meter; check "quiet after danger = COOLDOWN"    "0,COOLDOWN,sysfs"
 counter 50
-meter; check "counter regression = reboot, no alarm" "0,COOLDOWN,sysfs_reset"
+meter; check "reboot: post-boot total is the delta (below WARN)" "50,COOLDOWN,sysfs_reset"
 
 echo "# cooldown lift: timer floor passed AND last 6 samples quiet"
 fresh; counter 100000; meter
@@ -115,6 +115,11 @@ counter 100000                                    # eGPU returns, same lifetime 
 meter_auto; check "eGPU returns = OK, no false DANGER from sibling" "0,OK,sysfs"
 rm -rf "$SYS/$DEV2"
 
+echo "# P2 (Codex): reboot with a post-boot storm still fires (not discarded)"
+fresh; counter 100000; meter                      # baseline
+counter 6000                                      # reboot: counter reset, +6000 accrued at boot
+meter; check "reboot post-boot storm = DANGER on the total" "6000,DANGER,sysfs_reset"
+
 echo "# P2 (Codex): a failed unload check is not logged as a successful unload"
 fresh; counter 100000; meter                      # baseline
 counter 107000                                    # +7000 -> DANGER; shed on, Ollama down
@@ -124,6 +129,22 @@ if grep -q "COULD NOT verify" "$D/ALERT.txt" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok   unverifiable unload flagged, not reported as success"
 else
   FAIL=$((FAIL+1)); echo "FAIL alert did not flag unverifiable unload: [$(cat "$D/ALERT.txt" 2>/dev/null)]"
+fi
+# P1 (Codex): DANGER must be published even when the shed path runs (Ollama down)
+if grep -q '"level":"DANGER"' "$D/bake_state.json" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok   bake_state.json shows DANGER through a slow/hung shed"
+else
+  FAIL=$((FAIL+1)); echo "FAIL bake_state.json not DANGER during shed: [$(cat "$D/bake_state.json" 2>/dev/null)]"
+fi
+
+echo "# P2 (Codex): BM_STATE_JSON in a not-yet-existing directory is created"
+fresh; counter 100000
+BM_LOG="$D/bake.csv" BM_STATE_JSON="$D/container/system/bake_state.json" BM_SHED=0 \
+  BM_SYSFS_ROOT="$SYS" BM_AER_DEV="$DEV" BM_COOLDOWN_MIN=30 bash "$SCRIPT" 2>/dev/null
+if [ -f "$D/container/system/bake_state.json" ]; then
+  PASS=$((PASS+1)); echo "ok   BM_STATE_JSON parent dir created, file written"
+else
+  FAIL=$((FAIL+1)); echo "FAIL BM_STATE_JSON parent dir not created"
 fi
 
 echo

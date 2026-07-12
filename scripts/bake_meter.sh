@@ -68,7 +68,7 @@ SHED="${BM_SHED:-1}"
 OLLAMA="${BM_OLLAMA:-http://localhost:11434}"
 SYSFS="${BM_SYSFS_ROOT:-/sys/bus/pci/devices}"   # overridable for testing
 
-mkdir -p "$LOGDIR"
+mkdir -p "$LOGDIR" "$(dirname "$STATE")" "$(dirname "$STATE_JSON")"
 
 # --- read counters ---------------------------------------------------------
 
@@ -127,7 +127,12 @@ if [ -n "$TOTAL" ]; then
     DELTA=0; SOURCE=sysfs_first_run          # baseline only — never alarm on a
                                              # lifetime total mistaken for a burst
   elif [ "$TOTAL" -lt "$PREV_TOTAL" ]; then
-    DELTA=0; SOURCE=sysfs_reset              # counter went backwards = reboot
+    # Counter went backwards = the machine rebooted and the counter reset to 0.
+    # (A device dropping off the bus can't reach here: we read one pinned
+    # device, and its removal yields an EMPTY total -> the journalctl branch.)
+    # So TOTAL is the whole post-boot accumulation — count it, don't discard
+    # it, or a storm during boot/model-autoload would be silently missed.
+    DELTA=$TOTAL; SOURCE=sysfs_reset
   else
     DELTA=$((TOTAL - PREV_TOTAL)); SOURCE=sysfs
   fi
@@ -160,6 +165,20 @@ if [ "$LEVEL" != "DANGER" ] && [ "$LAST_DANGER" -gt 0 ]; then
 fi
 
 echo "$TS,$DELTA,$LEVEL,$TOTAL,$JOURNAL_1H,$SOURCE" >> "$LOG"
+
+# --- publish machine-readable state (atomic) -------------------------------
+# External gates (web UI, image-generation pipelines) read this file and refuse
+# heavy GPU loads while level is DANGER or COOLDOWN. Treat a stale file (epoch
+# older than ~10 min) as "meter not running" and fail CLOSED for heavy loads.
+# This is published BEFORE the shed/verification below: those Ollama calls can
+# be slow (or hang if Ollama is unreachable), and gates must see DANGER during
+# that window, not the previous OK/WARN.
+# `delta_5m` is kept as an alias of `delta` for backward compatibility (the v2
+# state file published `delta_5m`); both always carry the same value.
+TMP="$STATE_JSON.tmp.$$"
+printf '{"level":"%s","delta":%s,"delta_5m":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","aer_dev":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
+  "$LEVEL" "$DELTA" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "${AER_DEV:-none}" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
+  && mv -f "$TMP" "$STATE_JSON"
 
 # --- act -------------------------------------------------------------------
 
@@ -210,19 +229,9 @@ if [ "$LEVEL" = "OK" ] && [ -f "$ALERT" ]; then
   [ "$RECENT_BAD" -le 1 ] && rm -f "$ALERT"
 fi
 
-# --- publish machine-readable state (atomic) -------------------------------
-# External gates (web UI, image-generation pipelines) should read this file
-# and refuse heavy GPU loads while level is DANGER or COOLDOWN. Treat a stale
-# file (epoch older than ~10 min) as "meter not running" and fail CLOSED for
-# heavy loads like image generation — flying blind is how storms slip
-# through — while letting lightweight interactive traffic continue.
-TMP="$STATE_JSON.tmp.$$"
-# `delta_5m` is kept as an alias of `delta` for backward compatibility: the
-# v2 state file published `delta_5m`, and downstream gates parse that name.
-# New readers may use `delta`; both always carry the same value.
-printf '{"level":"%s","delta":%s,"delta_5m":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","aer_dev":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
-  "$LEVEL" "$DELTA" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "${AER_DEV:-none}" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
-  && mv -f "$TMP" "$STATE_JSON"
-
+# --- persist internal state for the next run -------------------------------
+# (Written last: it only carries the baseline/level/pin forward; if the shed
+# above was killed mid-run, PREV_LEVEL stays non-DANGER and the next run simply
+# re-sheds — safe. Gates never read this file; they read the JSON above.)
 printf '%s %s %s %s\n' "${STORE_TOTAL:-none}" "$LEVEL" "$LAST_DANGER" "${AER_DEV:-none}" > "$STATE.tmp.$$" \
   && mv -f "$STATE.tmp.$$" "$STATE"
