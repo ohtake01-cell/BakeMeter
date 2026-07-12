@@ -88,7 +88,12 @@ read_baddllp() {
 # link partner above the eGPU (docs/findings.md §8). Pinned after the first run
 # so it never switches devices mid-life (switching would re-create the lurch).
 find_aer_dev() {
-  local f n best="" best_n=-1
+  # best_n starts at 0, not -1: a device is only a candidate once it has a
+  # POSITIVE BadDLLP count. Before any errors (e.g. straight after boot) every
+  # counter reads 0; pinning the first zero-count device would likely latch an
+  # unrelated root port and blind us to the real link forever. Stay unpinned
+  # until a positive count reveals the noisy link partner.
+  local f n best="" best_n=0
   for f in "$SYSFS"/*/aer_dev_correctable; do
     [ -r "$f" ] || continue
     n=$(awk '$1=="BadDLLP"{print $2}' "$f")
@@ -112,6 +117,18 @@ LAST_DANGER="${LAST_DANGER:-0}"
 case "$PREV_TOTAL" in ''|*[!0-9]*) PREV_TOTAL="" ;; esac
 [ -z "$PREV_LEVEL" ] && PREV_TOTAL=""   # truncated state (missing fields) = no baseline
 case "$LAST_DANGER" in ''|*[!0-9]*) LAST_DANGER=0 ;; esac
+
+# One-time upgrade migration: the v2 script kept its baseline in a sibling
+# file named `bake_meter_state` (comma-separated "total,level"). If we have no
+# baseline yet but that legacy file exists, seed from it so an upgrade doesn't
+# re-baseline and miss a burst that happened across the version swap.
+if [ -z "$PREV_TOTAL" ]; then
+  LEGACY="$(dirname "$STATE")/bake_meter_state"
+  if [ -f "$LEGACY" ]; then
+    legacy_total=$(awk -F, 'NR==1{print $1}' "$LEGACY")
+    case "$legacy_total" in ''|*[!0-9]*) : ;; *) PREV_TOTAL="$legacy_total" ;; esac
+  fi
+fi
 
 # Resolve which device to read: explicit override wins, else the device pinned
 # on a previous run, else autodetect once and pin it going forward.

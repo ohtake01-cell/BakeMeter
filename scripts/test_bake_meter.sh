@@ -137,6 +137,28 @@ else
   FAIL=$((FAIL+1)); echo "FAIL bake_state.json not DANGER during shed: [$(cat "$D/bake_state.json" 2>/dev/null)]"
 fi
 
+echo "# P1 (Codex): autodetect must not pin a zero-count device"
+fresh
+mkdir -p "$SYS/$DEV2"
+printf 'BadDLLP 0\n' > "$SYS/$DEV2/aer_dev_correctable"   # unrelated port, no errors
+counter 0                                                 # eGPU also 0 right after boot
+meter_auto; check "all-zero boot = no pin, fallback" "0,OK,journalctl"
+read -r _ _ _ PINNED < "$D/bake_meter.state"
+if [ "$PINNED" = "none" ]; then PASS=$((PASS+1)); echo "ok   nothing pinned while every counter is 0"
+else FAIL=$((FAIL+1)); echo "FAIL pinned a zero-count device: [$PINNED]"; fi
+counter 3000                                              # errors appear on the eGPU link
+meter_auto; check "positive count = pin the busy device, baseline" "0,OK,sysfs_first_run"
+read -r _ _ _ PINNED < "$D/bake_meter.state"
+if [ "$PINNED" = "$DEV" ]; then PASS=$((PASS+1)); echo "ok   pins the device that actually shows errors ($PINNED)"
+else FAIL=$((FAIL+1)); echo "FAIL wrong pinned device: [$PINNED]"; fi
+rm -rf "$SYS/$DEV2"
+
+echo "# P2 (Codex): a legacy v2 baseline file is migrated on upgrade"
+fresh
+printf '500000,OK\n' > "$D/bake_meter_state"              # old v2 state: total,level
+counter 505000                                            # +5000 since the legacy baseline
+meter; check "legacy baseline migrated = burst not missed" "5000,DANGER,sysfs"
+
 echo "# P2 (Codex): BM_STATE_JSON in a not-yet-existing directory is created"
 fresh; counter 100000
 BM_LOG="$D/bake.csv" BM_STATE_JSON="$D/container/system/bake_state.json" BM_SHED=0 \
