@@ -44,6 +44,13 @@ gone() { rm -f "$AER"; }
 echo "# basic state machine"
 fresh; counter 100000
 meter; check "first run = baseline only"        "0,OK,sysfs_first_run"
+# bake_state.json must publish both delta and its compat alias delta_5m
+if grep -q '"delta":' "$D/bake_state.json" && grep -q '"delta_5m":' "$D/bake_state.json"; then
+  PASS=$((PASS+1)); echo "ok   bake_state.json carries delta + delta_5m alias"
+else
+  FAIL=$((FAIL+1)); echo "FAIL bake_state.json missing delta/delta_5m: [$(cat "$D/bake_state.json")]"
+fi
+counter 101000
 counter 101000
 meter; check "delta 1000 = WARN"                "1000,WARN,sysfs"
 counter 107000

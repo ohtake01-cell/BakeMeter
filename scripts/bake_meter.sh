@@ -173,8 +173,11 @@ fi
 # heavy loads like image generation — flying blind is how storms slip
 # through — while letting lightweight interactive traffic continue.
 TMP="$STATE_JSON.tmp.$$"
-printf '{"level":"%s","delta":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
-  "$LEVEL" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
+# `delta_5m` is kept as an alias of `delta` for backward compatibility: the
+# v2 state file published `delta_5m`, and downstream gates parse that name.
+# New readers may use `delta`; both always carry the same value.
+printf '{"level":"%s","delta":%s,"delta_5m":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
+  "$LEVEL" "$DELTA" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
   && mv -f "$TMP" "$STATE_JSON"
 
 printf '%s %s %s\n' "${STORE_TOTAL:-none}" "$LEVEL" "$LAST_DANGER" > "$STATE.tmp.$$" \
