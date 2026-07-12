@@ -23,9 +23,16 @@
 #   BM_STATE_JSON    machine-readable status JSON  (<BM_LOG dir>/bake_state.json)
 #                    — written atomically every run; point external gates
 #                    (e.g. "block image generation while DANGER") at this.
-#   BM_AER_DEV       PCI BDF to watch, e.g. 0000:18:01.0
-#                    (empty = sum BadDLLP over all PCI devices; fine for a
-#                    single-eGPU host, and robust against topology changes)
+#                    NOTE: this default is self-contained. A deployment that
+#                    published the file somewhere container-visible under an
+#                    older layout must set BM_STATE_JSON to that path so its
+#                    downstream gates keep reading the live file.
+#   BM_AER_DEV       PCI BDF to watch, e.g. 0000:18:01.0. Empty = autodetect
+#                    the busiest device (highest BadDLLP = the link partner
+#                    above the eGPU) once and PIN it in the state file. We
+#                    watch one device, never a sum across all of them: a summed
+#                    total lurches when a device drops off the bus and returns,
+#                    which is exactly the false-DANGER this meter must avoid.
 #   BM_WARN_DELTA    warn threshold, errors per run interval    (1000)
 #   BM_DANGER_DELTA  danger threshold, errors per run interval  (5000)
 #                    — provisional values measured on a TB2 host with sysfs
@@ -51,7 +58,7 @@ ALERT="${BM_ALERT:-$HOME/BAKE_ALERT.txt}"
 LOGDIR="$(dirname "$LOG")"
 STATE="${BM_STATE:-$LOGDIR/bake_meter.state}"
 STATE_JSON="${BM_STATE_JSON:-$LOGDIR/bake_state.json}"
-AER_DEV="${BM_AER_DEV:-}"
+AER_DEV_OVERRIDE="${BM_AER_DEV:-}"   # if set, pin this exact PCI BDF
 WARN_DELTA="${BM_WARN_DELTA:-1000}"
 DANGER_DELTA="${BM_DANGER_DELTA:-5000}"
 WARN_H="${BM_WARN:-50}"
@@ -65,26 +72,39 @@ mkdir -p "$LOGDIR"
 
 # --- read counters ---------------------------------------------------------
 
-# Sum BadDLLP from one device's aer_dev_correctable, or across all devices.
-read_baddllp_total() {
-  if [ -n "$AER_DEV" ]; then
-    awk '$1=="BadDLLP"{s+=$2} END{if(NR>0)print s+0}' \
-      "$SYSFS/$AER_DEV/aer_dev_correctable" 2>/dev/null
-  else
-    cat "$SYSFS"/*/aer_dev_correctable 2>/dev/null |
-      awk '$1=="BadDLLP"{s+=$2} END{if(NR>0)print s+0}'
-  fi
+# Read BadDLLP from ONE device's aer_dev_correctable. We watch a single pinned
+# device, never a sum across all devices: when a TB eGPU drops off the bus its
+# file vanishes, and summing whatever devices remain would make the total lurch
+# (down on drop-off, up on return) and fire a false DANGER — the exact failure
+# this meter exists to prevent. A missing file yields an empty result, which
+# routes cleanly to the journalctl fallback below.
+read_baddllp() {
+  [ -n "$1" ] || return
+  awk '$1=="BadDLLP"{print $2; found=1} END{exit !found}' \
+    "$SYSFS/$1/aer_dev_correctable" 2>/dev/null
 }
 
-TOTAL=$(read_baddllp_total)
+# Autodetect the device to watch: the one with the highest BadDLLP is the noisy
+# link partner above the eGPU (docs/findings.md §8). Pinned after the first run
+# so it never switches devices mid-life (switching would re-create the lurch).
+find_aer_dev() {
+  local f n best="" best_n=-1
+  for f in "$SYSFS"/*/aer_dev_correctable; do
+    [ -r "$f" ] || continue
+    n=$(awk '$1=="BadDLLP"{print $2}' "$f")
+    if [ "${n:-0}" -gt "$best_n" ]; then best_n="${n:-0}"; best=$(basename "$(dirname "$f")"); fi
+  done
+  [ -n "$best" ] && echo "$best"
+}
+
 JOURNAL_1H=$(journalctl -k --since "1 hour ago" --no-pager 2>/dev/null |
   grep -c "AER: Correctable error message received")
 TS=$(date "+%Y-%m-%d %H:%M")
 EPOCH=$(date +%s)
 
-# Previous run's state: prev_total prev_level last_danger_epoch
-PREV_TOTAL="" PREV_LEVEL="OK" LAST_DANGER=0
-[ -f "$STATE" ] && read -r PREV_TOTAL PREV_LEVEL LAST_DANGER < "$STATE"
+# Previous run's state: prev_total prev_level last_danger_epoch pinned_aer_dev
+PREV_TOTAL="" PREV_LEVEL="OK" LAST_DANGER=0 PINNED_DEV=""
+[ -f "$STATE" ] && read -r PREV_TOTAL PREV_LEVEL LAST_DANGER PINNED_DEV < "$STATE"
 LAST_DANGER="${LAST_DANGER:-0}"
 # Guard: only a non-negative integer is a usable baseline. Anything else
 # (the old -1 fallback sentinel, "none", a half-written state file) would
@@ -93,6 +113,13 @@ case "$PREV_TOTAL" in ''|*[!0-9]*) PREV_TOTAL="" ;; esac
 [ -z "$PREV_LEVEL" ] && PREV_TOTAL=""   # truncated state (missing fields) = no baseline
 case "$LAST_DANGER" in ''|*[!0-9]*) LAST_DANGER=0 ;; esac
 
+# Resolve which device to read: explicit override wins, else the device pinned
+# on a previous run, else autodetect once and pin it going forward.
+if [ -n "$AER_DEV_OVERRIDE" ]; then AER_DEV="$AER_DEV_OVERRIDE"
+elif [ -n "$PINNED_DEV" ] && [ "$PINNED_DEV" != "none" ]; then AER_DEV="$PINNED_DEV"
+else AER_DEV="$(find_aer_dev)"; fi
+
+TOTAL=$(read_baddllp "$AER_DEV")
 STORE_TOTAL="$TOTAL"
 if [ -n "$TOTAL" ]; then
   # sysfs path: alarm on the delta since last run.
@@ -137,9 +164,23 @@ echo "$TS,$DELTA,$LEVEL,$TOTAL,$JOURNAL_1H,$SOURCE" >> "$LOG"
 # --- act -------------------------------------------------------------------
 
 list_resident() {
-  curl -s --max-time 10 "$OLLAMA/api/ps" | python3 -c \
+  curl -s --max-time 10 "$OLLAMA/api/ps" 2>/dev/null | python3 -c \
     "import json,sys; print(' '.join(m['name'] for m in json.load(sys.stdin).get('models',[])))" \
     2>/dev/null
+}
+
+# Count resident models, distinguishing a verified zero from a failed check.
+# Echoes an integer on success, or "unknown" when Ollama is unreachable or
+# returns invalid JSON — so a failed verification is never logged as a
+# successful unload.
+count_resident() {
+  local out
+  out=$(curl -s --max-time 10 "$OLLAMA/api/ps" 2>/dev/null) || { echo unknown; return; }
+  [ -n "$out" ] || { echo unknown; return; }
+  printf '%s' "$out" | python3 -c \
+    "import json,sys
+try: print(len(json.load(sys.stdin).get('models',[])))
+except Exception: print('unknown')" 2>/dev/null || echo unknown
 }
 
 if [ "$LEVEL" = "DANGER" ] && [ "$PREV_LEVEL" != "DANGER" ]; then
@@ -148,9 +189,12 @@ if [ "$LEVEL" = "DANGER" ] && [ "$PREV_LEVEL" != "DANGER" ]; then
     for M in $(list_resident); do
       curl -s --max-time 10 "$OLLAMA/api/generate" -d "{\"model\":\"$M\",\"keep_alive\":0}" >/dev/null
     done
-    LEFT=$(list_resident | wc -w)
-    MSG="[$TS] DANGER: $N link errors ($SOURCE). All models unloaded to stop traffic. Possible freeze precursor."
-    [ "$LEFT" -gt 0 ] && MSG="$MSG WARNING: $LEFT model(s) still resident — check manually."
+    LEFT=$(count_resident)
+    case "$LEFT" in
+      0)  MSG="[$TS] DANGER: $N link errors ($SOURCE). All models unloaded to stop traffic (unload verified). Possible freeze precursor." ;;
+      unknown|'') MSG="[$TS] DANGER: $N link errors ($SOURCE). Unload requested but COULD NOT verify (Ollama unreachable) — check manually. Possible freeze precursor." ;;
+      *)  MSG="[$TS] DANGER: $N link errors ($SOURCE). Unload requested but $LEFT model(s) still resident — check manually. Possible freeze precursor." ;;
+    esac
     echo "$MSG" >> "$ALERT"
   else
     echo "[$TS] DANGER: $N link errors ($SOURCE). Reduce GPU traffic. Possible freeze precursor." >> "$ALERT"
@@ -176,9 +220,9 @@ TMP="$STATE_JSON.tmp.$$"
 # `delta_5m` is kept as an alias of `delta` for backward compatibility: the
 # v2 state file published `delta_5m`, and downstream gates parse that name.
 # New readers may use `delta`; both always carry the same value.
-printf '{"level":"%s","delta":%s,"delta_5m":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
-  "$LEVEL" "$DELTA" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
+printf '{"level":"%s","delta":%s,"delta_5m":%s,"baddllp_total":%s,"journal_1h":%s,"source":"%s","aer_dev":"%s","ts":"%s","epoch":%s,"cooldown_until_epoch":%s}\n' \
+  "$LEVEL" "$DELTA" "$DELTA" "$TOTAL" "$JOURNAL_1H" "$SOURCE" "${AER_DEV:-none}" "$TS" "$EPOCH" "$COOLDOWN_UNTIL" > "$TMP" \
   && mv -f "$TMP" "$STATE_JSON"
 
-printf '%s %s %s\n' "${STORE_TOTAL:-none}" "$LEVEL" "$LAST_DANGER" > "$STATE.tmp.$$" \
+printf '%s %s %s %s\n' "${STORE_TOTAL:-none}" "$LEVEL" "$LAST_DANGER" "${AER_DEV:-none}" > "$STATE.tmp.$$" \
   && mv -f "$STATE.tmp.$$" "$STATE"

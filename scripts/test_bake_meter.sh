@@ -26,6 +26,12 @@ meter() { # run one metering cycle; COOLDOWN_MIN overrides the cooldown floor
   bash "$SCRIPT" 2>/dev/null
 }
 
+meter_auto() { # like meter() but let the script autodetect+pin the device
+  BM_LOG="$D/bake.csv" BM_ALERT="$D/ALERT.txt" BM_SHED=0 \
+  BM_SYSFS_ROOT="$SYS" BM_COOLDOWN_MIN="${COOLDOWN_MIN:-30}" \
+  bash "$SCRIPT" 2>/dev/null
+}
+
 check() { # $1=name $2=want "delta,level,source"
   local last got
   last=$(tail -1 "$D/bake.csv")
@@ -93,6 +99,32 @@ fresh; counter 100000; meter
 printf '100' > "$D/bake_meter.state"             # truncated mid-write
 counter 100100
 meter; check "truncated state = re-baseline, no false alarm" "0,OK,sysfs_first_run"
+
+echo "# P1 (Codex): pin one device; a sibling device must not cause false DANGER"
+fresh
+DEV2="0000:00:1c.0"; mkdir -p "$SYS/$DEV2"
+printf 'BadDLLP 5000\n' > "$SYS/$DEV2/aer_dev_correctable"   # unrelated quiet device
+counter 100000                                    # eGPU is busiest -> gets pinned
+meter_auto; check "autodetect pins busiest device, baseline" "0,OK,sysfs_first_run"
+read -r _ _ _ PINNED < "$D/bake_meter.state"
+if [ "$PINNED" = "$DEV" ]; then PASS=$((PASS+1)); echo "ok   busiest device pinned in state ($PINNED)"
+else FAIL=$((FAIL+1)); echo "FAIL wrong/no pinned device: [$PINNED]"; fi
+gone                                              # eGPU drops off; sibling remains
+meter_auto; check "pinned device gone = fallback, not a phantom reset" "0,OK,journalctl"
+counter 100000                                    # eGPU returns, same lifetime counter
+meter_auto; check "eGPU returns = OK, no false DANGER from sibling" "0,OK,sysfs"
+rm -rf "$SYS/$DEV2"
+
+echo "# P2 (Codex): a failed unload check is not logged as a successful unload"
+fresh; counter 100000; meter                      # baseline
+counter 107000                                    # +7000 -> DANGER; shed on, Ollama down
+BM_LOG="$D/bake.csv" BM_ALERT="$D/ALERT.txt" BM_SHED=1 BM_OLLAMA="http://127.0.0.1:1" \
+  BM_SYSFS_ROOT="$SYS" BM_AER_DEV="$DEV" BM_COOLDOWN_MIN=30 bash "$SCRIPT" 2>/dev/null
+if grep -q "COULD NOT verify" "$D/ALERT.txt" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok   unverifiable unload flagged, not reported as success"
+else
+  FAIL=$((FAIL+1)); echo "FAIL alert did not flag unverifiable unload: [$(cat "$D/ALERT.txt" 2>/dev/null)]"
+fi
 
 echo
 echo "passed $PASS / $((PASS+FAIL))"
