@@ -96,6 +96,32 @@ Two design consequences, both applied in `scripts/bake_meter.sh` v2:
   quiet immediately. Unload models only on the transition into DANGER, then
   re-check `api/ps` and record honestly whether the unload actually worked.
 
+## 9. Cumulative-counter baselines don't survive reboots — rebase, don't wait
+
+(2026-07-12, found during live calibration.) Any automation that persists a
+cumulative-counter baseline across samples has a reboot trap: sysfs AER
+counters reset to ~0 on boot. Our recovery watcher had stored "release the
+GPU hold once the counter reaches the pre-unload baseline again" — after an
+unexpected reboot the counter went **81,433 → 15**, the condition could never
+become true again, and the hold stayed locked forever while GPU, queue and
+logs were all completely healthy.
+
+Design consequences for anything you build on top of these counters:
+
+- Record the boot generation with the baseline
+  (`/proc/sys/kernel/random/boot_id`) and treat a changed boot ID — or a
+  counter smaller than the stored baseline — as "new generation": **rebase
+  the baseline to the current value** instead of waiting for the old one.
+- After rebasing, require one more quiet observation window before releasing
+  any protective state; don't release in the same sample that rebased.
+- Expect a burst right after boot (we see ~10k BadDLLP shortly after
+  startup): during a rebase window, prefer re-baselining over re-triggering
+  panic actions.
+
+`bake_meter.sh` v2 itself already treats a backwards counter jump as
+"count since boot" (findings #8), so the simple meter recovers on its own;
+this finding is about *stateful* logic layered on top of it.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not
