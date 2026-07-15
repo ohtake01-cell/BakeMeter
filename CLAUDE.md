@@ -17,7 +17,7 @@ Thunderbolt eGPU 上で LLM を動かす Linux ホストの「凍結」を早期
 |---|---|
 | `scripts/bake_meter.sh` | 本体 v2。cron で5分毎に実行。sysfs AER カウンタ(BadDLLP)の区間差分で水位判定し、危険遷移時に一度だけ全モデル退避+退避検証。`bake_state.json` をコンテナ可視の場所へ書く |
 | `scripts/burst_test.sh` | 再現試験。LLM 風のバースト PCIe トラフィックを起こしてエラー率を測る |
-| `docs/findings.md` | 実測知見 #1〜#8(番号付き)。新知見は番号を増やして追記 |
+| `docs/findings.md` | 実測知見 #1〜#9(番号付き)。新知見は番号を増やして追記 |
 | `README.md` / `README.ja.md` | **対訳**。片方を変えたら必ずもう片方も更新 |
 
 ## 変更時に守ること
