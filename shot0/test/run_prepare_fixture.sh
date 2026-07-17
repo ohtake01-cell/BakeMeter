@@ -137,6 +137,22 @@ S0=$(snap)
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "非Linux entry0では中止" false || chk "非Linux entry0では中止" true
 chk "無変更" "[ '$S0' = \"\$(snap)\" ]"
 
+say "T10c: entry 0のlinux命令が別イメージ+後続引数に毒vmlinuzでも中止"
+mkfix 0 "$KREL"
+cat > "$FIX/grub.cfg" <<EOF
+menuentry 'Other kernel' \$menuentry_id_option 'other-BBBB' {
+	linux /boot/bzImage rescue_image=/boot/vmlinuz-$KREL
+}
+submenu 'Advanced options for Ubuntu' \$menuentry_id_option 'gnulinux-advanced-AAAA-BBBB' {
+	menuentry 'x' \$menuentry_id_option 'gnulinux-$KREL-advanced-AAAA-BBBB' {
+		linux /boot/vmlinuz-$KREL root=UUID=aaaa ro
+	}
+}
+EOF
+S0=$(snap)
+echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "後続引数の毒vmlinuzでは中止" false || chk "後続引数の毒vmlinuzでは中止" true
+chk "無変更" "[ '$S0' = \"\$(snap)\" ]"
+
 say "T10b: entry 0がsubmenuなら中止"
 mkfix 0 "$KREL"
 cat > "$FIX/grub.cfg" <<EOF

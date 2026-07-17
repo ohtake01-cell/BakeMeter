@@ -159,11 +159,16 @@ ENTRY0_KVER=$(awk '
   st==0 && /^submenu /   { print "NONLINEAR"; exit }
   st==0 && /^menuentry / { st=1; depth=1; next }
   st==1 {
-    # 実際のGRUB起動命令行のみを見る(コメント/メモ内のvmlinuz文字列を拾わない)
+    # 実際のGRUB起動命令行の「第1引数のbasename」だけを見る(コメント内や
+    # 後続kernelパラメータ中のvmlinuz文字列を拾わない — Codex v4.4監査P1)
     if ($0 ~ /^[ \t]*(linux|linuxefi|linux16)[ \t]/) {
-      i = index($0, "vmlinuz-")
-      if (i) { r = substr($0, i+8); split(r, a, /[ \t]/); print a[1]; exit }
-      print "NOLINUX"; exit   # linux命令はあるがvmlinuzでない(memtest等)
+      n = split($0, w, /[ \t]+/)
+      c = (w[1] == "" ? 2 : 1)          # 行頭空白でw[1]が空になる場合の補正
+      arg = (n >= c+1 ? w[c+1] : "")
+      nb = split(arg, p, "/")
+      base = (nb > 0 ? p[nb] : "")
+      if (base ~ /^vmlinuz-/) { print substr(base, 9); exit }
+      print "NOLINUX"; exit   # 起動対象がvmlinuzでない(bzImage/memtest等)
     }
     no = gsub(/{/, "{"); nc = gsub(/}/, "}")
     depth += no - nc
