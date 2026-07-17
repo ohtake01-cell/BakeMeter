@@ -18,9 +18,13 @@ MISSING=()
 for CMD in gcc make flex bison bc fakeroot dpkg-deb rsync; do
   command -v "$CMD" >/dev/null || MISSING+=("$CMD")
 done
+# bindeb-pkgのdpkg-checkbuilddepsで要求されるパッケージも先に全数検査(逐次停止の往復を防ぐ)
+for PKG in build-essential debhelper libdw-dev libelf-dev libssl-dev libncurses-dev kmod cpio; do
+  dpkg -s "$PKG" >/dev/null 2>&1 || MISSING+=("$PKG")
+done
 if [ "${#MISSING[@]}" -gt 0 ]; then
-  echo "ERROR: 不足コマンド: ${MISSING[*]}" >&2
-  echo "  目安: sudo apt-get install build-essential flex bison bc fakeroot dpkg-dev rsync libncurses-dev libssl-dev libelf-dev debhelper" >&2
+  echo "ERROR: 不足: ${MISSING[*]}" >&2
+  echo "  実行: sudo apt-get install -y ${MISSING[*]}" >&2
   exit 1
 fi
 [ -r "$RUNCFG" ] || { echo "ERROR: $RUNCFG が読めない" >&2; exit 1; }
