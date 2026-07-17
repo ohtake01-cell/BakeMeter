@@ -74,6 +74,12 @@ done
 #    OpenLinuxBoot注入の旧initrd=・BOOT_IMAGE=・失敗済みpci=*/hpbussize/hpmmio*系を再投入する)
 ROOT_ARG=$(tr ' ' '\n' < /proc/cmdline | grep -m1 '^root=' || true)
 [ -n "$ROOT_ARG" ] || { echo "ERROR: /proc/cmdlineからroot=を特定できない(実機は無変更)" >&2; exit 1; }
+# root=値そのものを厳格な形式に限定(Codex第5ラウンド: root=UUID=ok;reboot のような
+# GRUBメタ文字の再導入を生成側から遮断。UUID/PARTUUID/明示devパスのみ許可)
+if ! printf '%s\n' "$ROOT_ARG" | grep -Eq '^root=(UUID=[0-9a-fA-F-]+|PARTUUID=[0-9a-fA-F-]+|/dev/[a-zA-Z0-9/_-]+)$'; then
+  echo "ERROR: root=の形式が想定外(メタ文字混入の可能性): $ROOT_ARG (実機は無変更)" >&2
+  exit 1
+fi
 CMDLINE="$ROOT_ARG ro pcie_aspm=off"
 # 機械検査: 禁止要素(旧initrd/BOOT_IMAGE/PCI窓系の失敗済み引数/旧kernel名)が混入していないこと
 for BAD in "initrd=" "BOOT_IMAGE=" "pci=" "hpbussize" "hpmmiosize" "hpmmioprefsize" "hpmemsize" "$(uname -r)"; do
