@@ -52,15 +52,17 @@ custom_cfg_is_shot0_only() {
   awk '
     /^# SHOT0/ {next}
     /^menuentry '\''SHOT0-oneshot'\'' \{$/ {next}
-    /^[ \t]+(search|linux|initrd) / {next}
+    /^[ \t]+(search|linux|initrd) [^;{}$]*$/ {next}
     /^\}$/ {next}
     /^[ \t]*$/ {next}
     {exit 1}
   ' "$f" || return 1
   return 0
 }
-if [ -f /boot/grub/custom.cfg ] && ! custom_cfg_is_shot0_only; then
-  echo "ERROR: 既存の/boot/grub/custom.cfgがSHOT0専用の形でない(他用途エントリの可能性) — 上書きしない。王へ報告。" >&2
+# -f だけだと壊れたシンボリックリンクが素通りする(Codex第4ラウンド) — -e/-Lどちらかで
+# 「何かが居る」なら必ず所有判定を通す(判定はリンクを不合格にする)。
+if { [ -e /boot/grub/custom.cfg ] || [ -L /boot/grub/custom.cfg ]; } && ! custom_cfg_is_shot0_only; then
+  echo "ERROR: 既存の/boot/grub/custom.cfgがSHOT0専用の実ファイルでない(他用途/リンクの可能性) — 上書きしない。王へ報告。" >&2
   echo "  (実機にはまだ何も変更を加えていない)" >&2
   exit 1
 fi
@@ -68,6 +70,18 @@ fi
 for tool in grub-reboot grub-editenv dpkg findmnt; do
   command -v "$tool" >/dev/null || { echo "ERROR: $tool が無い(実機は無変更)" >&2; exit 1; }
 done
+# 4. SHOT0 entry用cmdlineを許可リスト方式で構築(Codex監査P1: /proc/cmdline丸ごと継承は
+#    OpenLinuxBoot注入の旧initrd=・BOOT_IMAGE=・失敗済みpci=*/hpbussize/hpmmio*系を再投入する)
+ROOT_ARG=$(tr ' ' '\n' < /proc/cmdline | grep -m1 '^root=' || true)
+[ -n "$ROOT_ARG" ] || { echo "ERROR: /proc/cmdlineからroot=を特定できない(実機は無変更)" >&2; exit 1; }
+CMDLINE="$ROOT_ARG ro pcie_aspm=off"
+# 機械検査: 禁止要素(旧initrd/BOOT_IMAGE/PCI窓系の失敗済み引数/旧kernel名)が混入していないこと
+for BAD in "initrd=" "BOOT_IMAGE=" "pci=" "hpbussize" "hpmmiosize" "hpmmioprefsize" "hpmemsize" "$(uname -r)"; do
+  case " $CMDLINE " in
+    *"$BAD"*) echo "ERROR: SHOT0 cmdlineに禁止要素 '$BAD' が混入: $CMDLINE (実機は無変更)" >&2; exit 1;;
+  esac
+done
+echo "OK: SHOT0 cmdline(許可リスト構築) = $CMDLINE"
 
 # ---- ここから実機を変更する。失敗時は現在地を正直に報告する(Codex P1: 半端状態の未検知防止) ----
 PHASE="未変更"
@@ -115,7 +129,7 @@ echo "OK: nvidiaモジュール確認 ($(modinfo -k "$NEWVER" -F version nvidia 
 # ---- 一回限りentry(custom.cfg) ----
 [ -f "/boot/vmlinuz-$NEWVER" ] || { echo "ERROR: /boot/vmlinuz-$NEWVER が無い" >&2; exit 1; }
 [ -f "/boot/initrd.img-$NEWVER" ] || { echo "ERROR: /boot/initrd.img-$NEWVER が無い(update-initramfs待ち?)" >&2; exit 1; }
-CMDLINE=$(sed 's/BOOT_IMAGE=[^ ]* //' /proc/cmdline)
+# (CMDLINEは前提チェック4で許可リスト構築・機械検査済み)
 # /bootが独立パーティションならGRUBからのパスは /vmlinuz-*、rootfs直下なら /boot/vmlinuz-*
 if findmnt -no UUID /boot >/dev/null 2>&1; then
   ROOT_UUID=$(findmnt -no UUID /boot)
@@ -127,11 +141,12 @@ else
   IPATH="/boot/initrd.img-$NEWVER"
 fi
 
-# (前提チェック済みだが、install中に書き換わった場合の再確認・同じ厳密判定)
-if [ -f /boot/grub/custom.cfg ] && ! custom_cfg_is_shot0_only; then
+# (前提チェック済みだが、install中に書き換わった場合の再確認・同じ厳密判定+リンク直前拒否)
+if { [ -e /boot/grub/custom.cfg ] || [ -L /boot/grub/custom.cfg ]; } && ! custom_cfg_is_shot0_only; then
   echo "ERROR: /boot/grub/custom.cfgがinstall中にSHOT0専用でない形へ変化 — 上書きしない。王へ報告。" >&2
   exit 1
 fi
+[ -L /boot/grub/custom.cfg ] && { echo "ERROR: custom.cfgがシンボリックリンク — 書かない。" >&2; exit 1; }
 cat > /boot/grub/custom.cfg <<EOF
 # SHOT0 one-time entry ($(date '+%Y-%m-%d %H:%M')) — rollback_shot0.sh で撤去
 menuentry 'SHOT0-oneshot' {

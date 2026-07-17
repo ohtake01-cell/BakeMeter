@@ -26,19 +26,20 @@ custom_cfg_is_shot0_only() {
   awk '
     /^# SHOT0/ {next}
     /^menuentry '\''SHOT0-oneshot'\'' \{$/ {next}
-    /^[ \t]+(search|linux|initrd) / {next}
+    /^[ \t]+(search|linux|initrd) [^;{}$]*$/ {next}
     /^\}$/ {next}
     /^[ \t]*$/ {next}
     {exit 1}
   ' "$f" || return 1
   return 0
 }
-if [ -f /boot/grub/custom.cfg ]; then
+# -e/-Lどちらかで「何かが居る」なら所有判定へ(壊れたリンクも素通りさせない)
+if [ -e /boot/grub/custom.cfg ] || [ -L /boot/grub/custom.cfg ]; then
   if custom_cfg_is_shot0_only; then
     rm /boot/grub/custom.cfg
     echo "/boot/grub/custom.cfg (SHOT0専用と厳密判定) を削除した"
   else
-    echo "WARN: custom.cfgはあるがSHOT0専用の形でない(他用途エントリの可能性) — 触らない。王へ報告。"
+    echo "WARN: custom.cfgはあるがSHOT0専用の実ファイルでない(他用途/リンクの可能性) — 触らない。王へ報告。"
   fi
 else
   echo "custom.cfg は無い"
