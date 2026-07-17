@@ -57,6 +57,13 @@ bash shot0/scripts/verify_deb_shot0.sh \
 
 # ---- ここから先は監査合格後・王へ直前報告してから(引き金は王) ----
 
+# 2.7 prepare(armの前提整備・王のsudo1回。dry-runは実機無変更の下見)
+sudo bash shot0/scripts/prepare_grub_saved.sh --dry-run   # 下見(無変更)
+sudo bash shot0/scripts/prepare_grub_saved.sh             # 本番(SHOT0-PREP手入力ゲート)
+#    → 旧custom.cfg退避(削除しない)+GRUB_DEFAULT=saved+saved_entryを現行kernelの
+#      名前付きIDへ固定+update-grub+readback検証。失敗時は取引から自動全復元。
+#    → 取り消し: sudo bash shot0/scripts/prepare_grub_saved.sh --undo
+
 # 3. 装填(dpkg -i + DKMS nvidia確認 + custom.cfg + grub-reboot。rebootはしない)
 sudo bash shot0/scripts/arm_oneshot_grub.sh ~/shot0_build/linux-image-*+shot0*.deb ~/shot0_build/linux-headers-*+shot0*.deb
 
