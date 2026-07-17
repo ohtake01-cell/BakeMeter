@@ -33,15 +33,49 @@ printf "上記を王へ報告し裁可を得たなら SHOT0-ARM と入力: "
 read -r ANSWER
 [ "$ANSWER" = "SHOT0-ARM" ] || { echo "中止(何も変更していない)"; exit 1; }
 
-# ---- 前提: grub-rebootが効く設定か(変更はしない・確認のみ) ----
+# ---- 前提チェック(Codex P1対応: 実機を変更する前に全て確認し、半端状態を作らない) ----
+# 1. grub-rebootが効く設定か(変更はしない・確認のみ)
 if ! grep -q '^GRUB_DEFAULT=saved' /etc/default/grub; then
   echo "ERROR: /etc/default/grub が GRUB_DEFAULT=saved でない。grub-rebootが効かない。" >&2
   echo "  王へ報告の上、GRUB_DEFAULT=saved + update-grub を先に実施すること(本スクリプトは勝手に書き換えない)" >&2
   exit 1
 fi
+# 2. 既存custom.cfgがSHOT0以外なら、install前にここで止める(install後に気付くと半端状態になる)
+if [ -f /boot/grub/custom.cfg ] && ! grep -q "SHOT0" /boot/grub/custom.cfg; then
+  echo "ERROR: 既存の/boot/grub/custom.cfgがshot0以外の内容 — 上書きしない。王へ報告。" >&2
+  echo "  (実機にはまだ何も変更を加えていない)" >&2
+  exit 1
+fi
+# 3. 道具が揃っているか
+for tool in grub-reboot grub-editenv dpkg findmnt; do
+  command -v "$tool" >/dev/null || { echo "ERROR: $tool が無い(実機は無変更)" >&2; exit 1; }
+done
+
+# ---- ここから実機を変更する。失敗時は現在地を正直に報告する(Codex P1: 半端状態の未検知防止) ----
+PHASE="未変更"
+report_state() {
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "============================================================" >&2
+    echo "ABORT(exit=$rc): 到達段階=$PHASE" >&2
+    case "$PHASE" in
+      未変更) echo "実機は無変更のまま。" >&2 ;;
+      install済み)
+        echo "半端状態: kernel debはinstall済み・装填(custom.cfg/next_entry)は未実施。" >&2
+        echo "撤去する場合: sudo rollback_shot0.sh --purge (ii以外の半端パッケージも掃除する)" >&2 ;;
+      装填済み)
+        echo "install+custom.cfgまで完了・next_entry設定中に失敗。" >&2
+        echo "状態確認: grub-editenv /boot/grub/grubenv list / 撤去: sudo rollback_shot0.sh --purge" >&2 ;;
+    esac
+    echo "王へこの表示のまま報告すること。" >&2
+    echo "============================================================" >&2
+  fi
+}
+trap report_state EXIT
 
 # ---- kernel install(デフォルトentryはsavedのままなので起動既定は変わらない) ----
 dpkg -i "$IMG_DEB" "$HDR_DEB"
+PHASE="install済み"
 
 # ---- DKMS: nvidiaモジュールが新kernel向けに存在するか ----
 if command -v dkms >/dev/null; then
@@ -50,6 +84,7 @@ fi
 if ! modinfo -k "$NEWVER" nvidia >/dev/null 2>&1; then
   echo "ERROR: 新kernel($NEWVER)用nvidiaモジュールが無い。nvidia-smi検証が成立しないため中止。" >&2
   echo "  dkms status を確認し、build後に再実行。装填(custom.cfg/next_entry)はまだ行っていない。" >&2
+  echo "  kernel debはinstall済みのため、やめる場合は sudo rollback_shot0.sh --purge で撤去。" >&2
   exit 1
 fi
 echo "OK: nvidiaモジュール確認 ($(modinfo -k "$NEWVER" -F version nvidia 2>/dev/null || echo version不明))"
@@ -69,8 +104,9 @@ else
   IPATH="/boot/initrd.img-$NEWVER"
 fi
 
+# (前提チェック済みだが、install中に書き換わった場合の再確認)
 if [ -f /boot/grub/custom.cfg ] && ! grep -q "SHOT0" /boot/grub/custom.cfg; then
-  echo "ERROR: 既存の/boot/grub/custom.cfgがshot0以外の内容 — 上書きしない。王へ報告。" >&2
+  echo "ERROR: /boot/grub/custom.cfgがinstall中にshot0以外の内容へ変化 — 上書きしない。王へ報告。" >&2
   exit 1
 fi
 cat > /boot/grub/custom.cfg <<EOF
@@ -83,6 +119,7 @@ menuentry 'SHOT0-oneshot' {
 EOF
 
 # ---- 次回1回のみSHOT0で起動(デフォルトは不変) ----
+PHASE="装填済み"
 grub-reboot "SHOT0-oneshot"
 
 echo "== 装填結果 =="

@@ -14,12 +14,21 @@ EVID_DIR="$SRC_DIR/shot0_evidence"
 [ -f "$QUIRKS" ]  || { echo "ERROR: quirks.cが無い: $QUIRKS (kernelソースツリーを指定)" >&2; exit 1; }
 
 if grep -q "SHOT0 BEGIN" "$QUIRKS"; then
-  echo "既に適用済み(SHOT0 BEGINあり) — 二重適用しない"
-  exit 0
+  # 内容照合(Codex P1対応の一環): マーカーの有無だけで判定すると、quirk修正後の
+  # 再buildが「黙って旧版を焼く」罠になる。適用済みblockとsnippetを比較し、
+  # 一致=何もしない / 不一致=旧blockを撤去して最新を再適用する。
+  CUR_BLOCK=$(sed -n '/SHOT0 BEGIN/,/SHOT0 END/p' "$QUIRKS")
+  if [ "$CUR_BLOCK" = "$(cat "$SNIPPET")" ]; then
+    echo "既に適用済み(内容一致) — 変更なし"
+    exit 0
+  fi
+  echo "適用済みblockが現snippetと不一致(旧版) — 旧blockを撤去して最新を再適用する"
+  sed -i.shot0stale '/SHOT0 BEGIN/,/SHOT0 END/d' "$QUIRKS"
 fi
 
 mkdir -p "$EVID_DIR"
-cp -a "$QUIRKS" "$EVID_DIR/quirks.c.orig"
+# orig(shot0適用前の原本)は初回のみ保存。再適用時は上書きしない(diffの基準を保つ)
+[ -f "$EVID_DIR/quirks.c.orig" ] || cp -a "$QUIRKS" "$EVID_DIR/quirks.c.orig"
 
 { echo ""; cat "$SNIPPET"; } >> "$QUIRKS"
 

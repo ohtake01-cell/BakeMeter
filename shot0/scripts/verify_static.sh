@@ -5,6 +5,8 @@
 #   V3: 使用するPCI_REBAR_*定数が実ツリーに存在すること
 #   V4: quirks.c にSHOT0が正しく1回だけ入っていること(適用後のみ)
 #   V5: 実行中kernelの CONFIG_PCI_QUIRKS=y (built-in quirk前提)
+#   V6: quirks.c が <linux/dmi.h> をincludeしていること(DMI機体ガードの前提)
+#       + 実機DMIが MacPro6,1 であること(このスクリプトを実機で走らせた時のみ)
 # 使い方: verify_static.sh <kernel-source-dir>
 set -euo pipefail
 
@@ -80,6 +82,24 @@ if [ -r "$RUNCFG" ]; then
   fi
 else
   say "SKIP" "V5: $RUNCFG が読めない(実機で再実行)"
+fi
+
+# V6: DMI機体ガードの前提(quirkはdmi_match(DMI_PRODUCT_NAME,"MacPro6,1")を使う)
+if grep -q '#include <linux/dmi.h>' "$QUIRKS" 2>/dev/null; then
+  ok "V6: quirks.c が <linux/dmi.h> をinclude済み"
+else
+  ng "V6: quirks.c に <linux/dmi.h> が無い — dmi_matchがビルドできない"
+fi
+DMI_PN="/sys/class/dmi/id/product_name"
+if [ -r "$DMI_PN" ]; then
+  PN=$(cat "$DMI_PN")
+  if [ "$PN" = "MacPro6,1" ]; then
+    ok "V6: 実機DMI product_name=MacPro6,1(ガードが実機で発火する)"
+  else
+    ng "V6: 実機DMIが $PN — この機体ではquirkは発火しない(機体を確認)"
+  fi
+else
+  say "SKIP" "V6: $DMI_PN が読めない(実機で再実行)"
 fi
 
 echo

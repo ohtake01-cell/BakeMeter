@@ -9,9 +9,16 @@
  *  T3: ReBAR capability無しは完全不介入
  *  T4: 64MiB非対応capは完全不介入
  *  T5: 2エントリ(entry0=BAR0, entry1=BAR1)でBAR1のみ書換え、BAR0不介入
- *  T6: 書込み不成立(RO模擬)でerrログ経路+decode復元+実サイズ不変
+ *  T6: 書込み不成立(RO模擬)でerrログ経路+旧値復元検証+decode復元+実サイズ不変
  *  T7: 既にsize=6なら書込みゼロ
  *  T8: 全ケースでReBAR CTRL書込み時にmemory decodeが落ちていること(write順)
+ * Codex監査P1対応(fail-closed契約):
+ *  T9:  DMIがMacPro6,1でない/未初期化なら完全不介入
+ *  T10: config読取りがaccessorエラーなら完全不介入
+ *  T11: config読取りが~0(デバイス消失)なら完全不介入(capの偽陽性も防ぐ)
+ *  T12: COMMAND読取りが0xFFFFなら完全不介入
+ *  T13: decode停止の書込み失敗ならReBAR書込みゼロ+COMMAND復元試行
+ *  T14: COMMAND復元の書込み失敗をpci_errで検知(未検知にしない)
  *
  * ビルド/実行: bash test/run_mock.sh
  */
@@ -19,6 +26,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 typedef uint32_t u32;
 typedef uint16_t u16;
@@ -43,16 +51,54 @@ struct pci_dev {
 #define PCI_REBAR_CTRL_BAR_SIZE		0x00001f00
 #define PCI_REBAR_CTRL_BAR_SHIFT	8
 #define PCI_VENDOR_ID_NVIDIA		0x10de
+#define PCIBIOS_SUCCESSFUL		0x00
+#define PCIBIOS_DEVICE_NOT_FOUND	0x86
+#define PCI_ERROR_RESPONSE		(~0ULL)
+#define PCI_POSSIBLE_ERROR(val)		((val) == ((typeof(val)) PCI_ERROR_RESPONSE))
+
+/* DMIスタブ: 実kernelのdmi_matchは未初期化identでfalseを返す(fail-closed)。同じ契約。 */
+#define DMI_PRODUCT_NAME 1
+static const char *g_dmi_product = "MacPro6,1";
+static bool dmi_match(int field, const char *s)
+{
+	(void)field;
+	return g_dmi_product && strcmp(g_dmi_product, s) == 0;
+}
 
 static int g_rebar_writes;          /* ReBAR CTRLへの実書込み回数 */
 static int g_decode_ok = 1;         /* 書込み時にdecodeが落ちていたか(T8) */
+static int g_err_count;             /* pci_err呼出し回数(検知の証拠) */
+
+/* 故障注入(P1試験用) */
+static int g_fail_dword_read_off = -1;  /* このオフセットのdword読取りをaccessorエラーに */
+static int g_ff_dword_read_off = -1;    /* このオフセットのdword読取りを~0応答に */
+static int g_cmd_read_ff;               /* COMMAND読取りを0xFFFFに */
+static int g_cmd_write_fail_nth;        /* n回目のCOMMAND書込みを失敗させる(1始まり・0=無効) */
+static int g_cmd_writes;
 
 static int pci_read_config_dword(struct pci_dev *d, int off, u32 *v)
-{ memcpy(v, d->cfg + off, 4); return 0; }
+{
+	if (off == g_fail_dword_read_off) { *v = 0xffffffffu; return PCIBIOS_DEVICE_NOT_FOUND; }
+	if (off == g_ff_dword_read_off) { *v = 0xffffffffu; return 0; }
+	memcpy(v, d->cfg + off, 4);
+	return 0;
+}
 static int pci_read_config_word(struct pci_dev *d, int off, u16 *v)
-{ memcpy(v, d->cfg + off, 2); return 0; }
+{
+	if (off == PCI_COMMAND && g_cmd_read_ff) { *v = 0xffff; return 0; }
+	memcpy(v, d->cfg + off, 2);
+	return 0;
+}
 static int pci_write_config_word(struct pci_dev *d, int off, u16 v)
-{ memcpy(d->cfg + off, &v, 2); return 0; }
+{
+	if (off == PCI_COMMAND) {
+		g_cmd_writes++;
+		if (g_cmd_write_fail_nth && g_cmd_writes == g_cmd_write_fail_nth)
+			return PCIBIOS_DEVICE_NOT_FOUND;
+	}
+	memcpy(d->cfg + off, &v, 2);
+	return 0;
+}
 
 static int is_rebar_ctrl_off(struct pci_dev *d, int off)
 {
@@ -82,7 +128,7 @@ static int pci_find_ext_capability(struct pci_dev *d, int cap)
 
 #define pci_info(d, ...) ((void)(d), printf("  info: " __VA_ARGS__))
 #define pci_warn(d, ...) ((void)(d), printf("  warn: " __VA_ARGS__))
-#define pci_err(d, ...)  ((void)(d), printf("  err:  " __VA_ARGS__))
+#define pci_err(d, ...)  ((void)(d), g_err_count++, printf("  err:  " __VA_ARGS__))
 #define DECLARE_PCI_FIXUP_EARLY(vend, dev, fn) void *shot0_fixup_##dev = (void *)(fn)
 
 #include "../src/shot0_quirk.c"
@@ -122,7 +168,13 @@ static int cur_size(struct pci_dev *d, int entry)
 	return (ctrl & PCI_REBAR_CTRL_BAR_SIZE) >> PCI_REBAR_CTRL_BAR_SHIFT;
 }
 
-static void reset_counters(void) { g_rebar_writes = 0; g_decode_ok = 1; }
+static void reset_counters(void)
+{
+	g_rebar_writes = 0; g_decode_ok = 1; g_err_count = 0;
+	g_fail_dword_read_off = -1; g_ff_dword_read_off = -1;
+	g_cmd_read_ff = 0; g_cmd_write_fail_nth = 0; g_cmd_writes = 0;
+	g_dmi_product = "MacPro6,1";
+}
 
 int main(void)
 {
@@ -176,19 +228,74 @@ int main(void)
 	chk(g_rebar_writes == 1, "書込みは1回のみ");
 	chk(g_decode_ok, "T8: 書込み時decode OFF");
 
-	printf("T6: 書込み不成立(RO模擬) — errログ経路とdecode復元\n");
+	printf("T6: 書込み不成立(RO模擬) — errログ経路と旧値復元検証・decode復元\n");
 	reset_counters();
 	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
 	d.ro_ctrl_off = CAPPOS + PCI_REBAR_CTRL;
 	quirk_shot0_nvidia_bar1_64mib(&d);
 	chk(cur_size(&d, 0) == 8, "実サイズ不変(RO)");
 	chk(get16(&d, PCI_COMMAND) == 0x0006, "COMMAND復元(err経路でも)");
+	chk(g_err_count >= 1, "不一致がpci_errで検知される");
+	chk(g_decode_ok, "T8: 復元書込みもdecode OFF中");
 
 	printf("T7: 既にsize=6なら書込みゼロ\n");
 	reset_counters();
 	d = mkdev(0x7fc0, 1, 6, 1, 0x0006);
 	quirk_shot0_nvidia_bar1_64mib(&d);
 	chk(g_rebar_writes == 0, "書込みゼロ");
+
+	printf("T9: DMI違い(iMac想定)は完全不介入\n");
+	reset_counters();
+	g_dmi_product = "iMac20,1";
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8 && g_rebar_writes == 0, "無変更・書込みゼロ");
+
+	printf("T9b: DMI未初期化(NULL)も完全不介入\n");
+	reset_counters();
+	g_dmi_product = NULL;
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8 && g_rebar_writes == 0, "無変更・書込みゼロ");
+
+	printf("T10: ReBAR CTRL読取りaccessorエラーは不介入\n");
+	reset_counters();
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	g_fail_dword_read_off = CAPPOS + PCI_REBAR_CTRL;
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8 && g_rebar_writes == 0, "無変更・書込みゼロ");
+
+	printf("T11: CAP読取りが~0(デバイス消失)なら不介入(bit10偽陽性を防ぐ)\n");
+	reset_counters();
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	g_ff_dword_read_off = CAPPOS + PCI_REBAR_CAP;
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8 && g_rebar_writes == 0, "無変更・書込みゼロ");
+
+	printf("T12: COMMAND読取りが0xFFFFなら不介入\n");
+	reset_counters();
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	g_cmd_read_ff = 1;
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8 && g_rebar_writes == 0, "無変更・書込みゼロ");
+
+	printf("T13: decode停止の書込み失敗ならReBARに一切書かない\n");
+	reset_counters();
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	g_cmd_write_fail_nth = 1;	/* 1回目=decode停止 */
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 8, "実サイズ不変");
+	chk(g_rebar_writes == 0, "ReBAR書込みゼロ");
+	chk(g_err_count >= 1, "失敗がpci_errで検知される");
+	chk(g_cmd_writes >= 2, "COMMAND復元を試行している");
+
+	printf("T14: COMMAND復元の書込み失敗を未検知にしない\n");
+	reset_counters();
+	d = mkdev(0x7fc0, 1, 8, 1, 0x0006);
+	g_cmd_write_fail_nth = 2;	/* 2回目=復元 */
+	quirk_shot0_nvidia_bar1_64mib(&d);
+	chk(cur_size(&d, 0) == 6, "resize自体は成立");
+	chk(g_err_count >= 1, "復元失敗がpci_errで検知される");
 
 	printf("\n%s\n", g_fail ? "== 模擬試験 FAILあり ==" : "== 模擬試験 全PASS ==");
 	return g_fail;
