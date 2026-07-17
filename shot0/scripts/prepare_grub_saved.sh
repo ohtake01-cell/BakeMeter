@@ -159,8 +159,12 @@ ENTRY0_KVER=$(awk '
   st==0 && /^submenu /   { print "NONLINEAR"; exit }
   st==0 && /^menuentry / { st=1; depth=1; next }
   st==1 {
-    i = index($0, "vmlinuz-")
-    if (i) { r = substr($0, i+8); split(r, a, /[ \t]/); print a[1]; exit }
+    # 実際のGRUB起動命令行のみを見る(コメント/メモ内のvmlinuz文字列を拾わない)
+    if ($0 ~ /^[ \t]*(linux|linuxefi|linux16)[ \t]/) {
+      i = index($0, "vmlinuz-")
+      if (i) { r = substr($0, i+8); split(r, a, /[ \t]/); print a[1]; exit }
+      print "NOLINUX"; exit   # linux命令はあるがvmlinuzでない(memtest等)
+    }
     no = gsub(/{/, "{"); nc = gsub(/}/, "}")
     depth += no - nc
     if (depth <= 0) { print "NOLINUX"; exit }

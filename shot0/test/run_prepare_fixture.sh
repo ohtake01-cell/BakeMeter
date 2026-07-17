@@ -117,11 +117,12 @@ mkfix 0 "$KREL"
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "二重prepare中止" false || chk "二重prepare中止" true
 
-say "T10: entry 0が非Linux entry(memtest/chainloader型)なら中止"
+say "T10: entry 0が非Linux entry(chainloader+毒コメント入り)なら中止"
 mkfix 0 "$KREL"
 cat > "$FIX/grub.cfg" <<EOF
-menuentry 'Memory test (memtest86+)' \$menuentry_id_option 'memtest-AAAA' {
-	linux16 /boot/memtest86+x64.bin
+menuentry 'Other OS' \$menuentry_id_option 'other-AAAA' {
+	# fallback memo: /boot/vmlinuz-$KREL
+	chainloader /EFI/other/bootx64.efi
 }
 menuentry 'Ubuntu' --class ubuntu \$menuentry_id_option 'gnulinux-simple-AAAA-BBBB' {
 	linux /boot/vmlinuz-$KREL root=UUID=aaaa ro quiet
