@@ -16,12 +16,21 @@ else
 fi
 
 echo "== 2. custom.cfg撤去 =="
+# Codex P1第2ラウンド: 所有判定は部分文字列でなく厳密に(arm側と同じ判定)。
+# SHOT0の生成物だけで構成されたファイルのみ削除 — 他用途エントリ混在なら触らない。
+custom_cfg_is_shot0_only() {
+  local f=/boot/grub/custom.cfg
+  head -1 "$f" | grep -q '^# SHOT0 one-time entry' || return 1
+  [ "$(grep -c '^menuentry' "$f")" -eq 1 ] || return 1
+  grep -q "^menuentry 'SHOT0-oneshot'" "$f" || return 1
+  return 0
+}
 if [ -f /boot/grub/custom.cfg ]; then
-  if grep -q "SHOT0" /boot/grub/custom.cfg; then
+  if custom_cfg_is_shot0_only; then
     rm /boot/grub/custom.cfg
-    echo "/boot/grub/custom.cfg (SHOT0) を削除した"
+    echo "/boot/grub/custom.cfg (SHOT0専用と厳密判定) を削除した"
   else
-    echo "WARN: custom.cfgはあるがSHOT0以外の内容 — 触らない。王へ報告。"
+    echo "WARN: custom.cfgはあるがSHOT0専用の形でない(他用途エントリの可能性) — 触らない。王へ報告。"
   fi
 else
   echo "custom.cfg は無い"

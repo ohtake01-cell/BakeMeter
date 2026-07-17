@@ -20,21 +20,22 @@
  *   memory decode一時停止 → ReBAR CTRL書込(1レジスタのみ) → 読み戻し検証 → decode復元。
  * MMIOアクセスは一切しない。
  *
- * fail-closed契約(Codex監査P1対応 2026-07-17):
+ * fail-closed契約(Codex監査P1対応 2026-07-17・第2ラウンド込み):
  *  - DMIがMacPro6,1でなければ発火しない(DMI未初期化・不明も発火しない)。
  *  - 全config読取りは戻り値と~0応答(デバイス消失)を検査。異常=不介入で退く。
- *  - decode停止の書込みに失敗したらReBARへ一切書かない(復元を試みて退く)。
- *  - ReBAR読み戻し不一致/失敗時は旧値の復元を試み、復元の成否も読み戻しで検証・報告。
- *  - COMMAND復元は読み戻しで検証し、失敗は未検知にせずpci_errで報告する。
+ *  - decode停止は書込み成功だけでなく読み戻しでMEMORYビット消灯を確認してから
+ *    ReBARへ進む(「成功を返すが変更を無視する」経路もfail-closed)。
+ *  - ReBAR読み戻し不一致/失敗時は旧値の復元を試み、復元の成否はCTRL全体一致で検証・報告。
+ *  - COMMAND復元はレジスタ全体一致で検証し、失敗は未検知にせずpci_errで報告する。
  */
 static bool shot0_restore_command(struct pci_dev *pdev, u16 orig_cmd)
 {
 	u16 cmd_now;
 
+	/* 検証はレジスタ全体の一致(P1第2ラウンド: MEMORYビットだけでは他ビット破損を見逃す) */
 	if (pci_write_config_word(pdev, PCI_COMMAND, orig_cmd) == PCIBIOS_SUCCESSFUL &&
 	    pci_read_config_word(pdev, PCI_COMMAND, &cmd_now) == PCIBIOS_SUCCESSFUL &&
-	    !PCI_POSSIBLE_ERROR(cmd_now) &&
-	    (cmd_now & PCI_COMMAND_MEMORY) == (orig_cmd & PCI_COMMAND_MEMORY))
+	    cmd_now == orig_cmd)
 		return true;
 
 	pci_err(pdev, "shot0: COMMAND restore NOT verified (wanted %#06x)\n", orig_cmd);
@@ -111,9 +112,19 @@ static void quirk_shot0_nvidia_bar1_64mib(struct pci_dev *pdev)
 			return;
 		}
 		if (orig_cmd & PCI_COMMAND_MEMORY) {
+			u16 cmd_chk;
+
+			/*
+			 * P1第2ラウンド: 書込み成功の戻り値だけでは「成功を返すが
+			 * 変更を黙って無視する」経路を検知できない。読み戻しで
+			 * MEMORYビットが実際に落ちたことを確認してからReBARへ進む。
+			 */
 			if (pci_write_config_word(pdev, PCI_COMMAND,
-						  orig_cmd & ~PCI_COMMAND_MEMORY) != PCIBIOS_SUCCESSFUL) {
-				pci_err(pdev, "shot0: memory decode stop failed, leaving ReBAR untouched\n");
+						  orig_cmd & ~PCI_COMMAND_MEMORY) != PCIBIOS_SUCCESSFUL ||
+			    pci_read_config_word(pdev, PCI_COMMAND, &cmd_chk) != PCIBIOS_SUCCESSFUL ||
+			    PCI_POSSIBLE_ERROR(cmd_chk) ||
+			    (cmd_chk & PCI_COMMAND_MEMORY)) {
+				pci_err(pdev, "shot0: memory decode stop not verified, leaving ReBAR untouched\n");
 				shot0_restore_command(pdev, orig_cmd);
 				return;
 			}
@@ -142,12 +153,15 @@ static void quirk_shot0_nvidia_bar1_64mib(struct pci_dev *pdev)
 			verify, new_size);
 
 restore_ctrl:
-		/* 旧値の復元を試み、成否も読み戻しで検証する(未検知にしない) */
+		/*
+		 * 旧値の復元を試み、成否も読み戻しで検証する(未検知にしない)。
+		 * 検証はCTRLレジスタ全体の一致(P1第2ラウンド: sizeフィールドだけでは
+		 * 他ビットの破損を「restored」と誤判定する)。
+		 */
 		if (pci_write_config_dword(pdev, pos + PCI_REBAR_CTRL, old_ctrl) == PCIBIOS_SUCCESSFUL &&
 		    pci_read_config_dword(pdev, pos + PCI_REBAR_CTRL, &verify) == PCIBIOS_SUCCESSFUL &&
-		    !PCI_POSSIBLE_ERROR(verify) &&
-		    (int)((verify & PCI_REBAR_CTRL_BAR_SIZE) >> PCI_REBAR_CTRL_BAR_SHIFT) == old_size)
-			pci_warn(pdev, "shot0: old BAR1 size %d restored\n", old_size);
+		    verify == old_ctrl)
+			pci_warn(pdev, "shot0: old BAR1 ctrl restored (size %d)\n", old_size);
 		else
 			pci_err(pdev, "shot0: old value restore NOT verified, device state uncertain\n");
 

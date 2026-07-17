@@ -40,9 +40,18 @@ if ! grep -q '^GRUB_DEFAULT=saved' /etc/default/grub; then
   echo "  王へ報告の上、GRUB_DEFAULT=saved + update-grub を先に実施すること(本スクリプトは勝手に書き換えない)" >&2
   exit 1
 fi
-# 2. 既存custom.cfgがSHOT0以外なら、install前にここで止める(install後に気付くと半端状態になる)
-if [ -f /boot/grub/custom.cfg ] && ! grep -q "SHOT0" /boot/grub/custom.cfg; then
-  echo "ERROR: 既存の/boot/grub/custom.cfgがshot0以外の内容 — 上書きしない。王へ報告。" >&2
+# 2. 既存custom.cfgの所有判定(Codex P1第2ラウンド: 部分文字列でなく厳密判定)。
+#    「SHOT0の生成物だけで構成されたファイル」以外は上書きしない — SHOT0の文字列が
+#    混ざった他用途エントリ入りファイルを破壊しないため。install前にここで止める。
+custom_cfg_is_shot0_only() {
+  local f=/boot/grub/custom.cfg
+  head -1 "$f" | grep -q '^# SHOT0 one-time entry' || return 1
+  [ "$(grep -c '^menuentry' "$f")" -eq 1 ] || return 1
+  grep -q "^menuentry 'SHOT0-oneshot'" "$f" || return 1
+  return 0
+}
+if [ -f /boot/grub/custom.cfg ] && ! custom_cfg_is_shot0_only; then
+  echo "ERROR: 既存の/boot/grub/custom.cfgがSHOT0専用の形でない(他用途エントリの可能性) — 上書きしない。王へ報告。" >&2
   echo "  (実機にはまだ何も変更を加えていない)" >&2
   exit 1
 fi
@@ -60,6 +69,9 @@ report_state() {
     echo "ABORT(exit=$rc): 到達段階=$PHASE" >&2
     case "$PHASE" in
       未変更) echo "実機は無変更のまま。" >&2 ;;
+      install実行中)
+        echo "dpkg -i の途中で失敗 — パッケージが半端状態(iU/iF等)で残っている可能性。" >&2
+        echo "確認: dpkg -l | grep shot0 / 撤去: sudo rollback_shot0.sh --purge (半端状態も掃除する)" >&2 ;;
       install済み)
         echo "半端状態: kernel debはinstall済み・装填(custom.cfg/next_entry)は未実施。" >&2
         echo "撤去する場合: sudo rollback_shot0.sh --purge (ii以外の半端パッケージも掃除する)" >&2 ;;
@@ -74,6 +86,8 @@ report_state() {
 trap report_state EXIT
 
 # ---- kernel install(デフォルトentryはsavedのままなので起動既定は変わらない) ----
+# P1第2ラウンド: dpkg実行前にPHASEを進める(途中失敗を「無変更」と誤報しない)
+PHASE="install実行中"
 dpkg -i "$IMG_DEB" "$HDR_DEB"
 PHASE="install済み"
 
@@ -104,9 +118,9 @@ else
   IPATH="/boot/initrd.img-$NEWVER"
 fi
 
-# (前提チェック済みだが、install中に書き換わった場合の再確認)
-if [ -f /boot/grub/custom.cfg ] && ! grep -q "SHOT0" /boot/grub/custom.cfg; then
-  echo "ERROR: /boot/grub/custom.cfgがinstall中にshot0以外の内容へ変化 — 上書きしない。王へ報告。" >&2
+# (前提チェック済みだが、install中に書き換わった場合の再確認・同じ厳密判定)
+if [ -f /boot/grub/custom.cfg ] && ! custom_cfg_is_shot0_only; then
+  echo "ERROR: /boot/grub/custom.cfgがinstall中にSHOT0専用でない形へ変化 — 上書きしない。王へ報告。" >&2
   exit 1
 fi
 cat > /boot/grub/custom.cfg <<EOF
