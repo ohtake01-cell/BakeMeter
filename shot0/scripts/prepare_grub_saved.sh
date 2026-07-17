@@ -90,9 +90,13 @@ if [ "$MODE_ARG" = "--undo" ]; then
     echo "  先に sudo rollback_shot0.sh --purge で装填とshot0 kernelを撤去してから再実行。王へ報告。" >&2
     exit 1
   fi
-  # shot0 kernelが残ったままGRUB_DEFAULT=0へ戻すと、entry 0がshot0を指す(Codex v3監査P1-3)
-  SHOT0_PKGS=$("$DPKG_QUERY" -W -f='${db:Status-Abbrev}\t${Package}\n' 2>/dev/null \
-               | awk -F'\t' '$2 ~ /shot0/ && $1 !~ /^un/ {print $2}' || true)
+  # shot0 kernelが残ったままGRUB_DEFAULT=0へ戻すと、entry 0がshot0を指す(Codex v3監査P1-3)。
+  # 照会自体の失敗はfail-closed=undo中止(空結果と区別する・Codex v4.1監査P1)。
+  if ! PKG_RAW=$("$DPKG_QUERY" -W -f='${db:Status-Abbrev}\t${Package}\n' 2>/dev/null); then
+    echo "ERROR: パッケージ照会($DPKG_QUERY)に失敗。shot0残存を確認できないためundo中止(fail-closed)。王へ報告。" >&2
+    exit 1
+  fi
+  SHOT0_PKGS=$(printf '%s\n' "$PKG_RAW" | awk -F'\t' '$2 ~ /shot0/ && $1 !~ /^un/ {print $2}')
   if [ -n "$SHOT0_PKGS" ]; then
     echo "ERROR: shot0 kernelパッケージが残っている($SHOT0_PKGS)。" >&2
     echo "  GRUB_DEFAULT=0へ戻すとentry 0がshot0 kernelを指すため、先に sudo rollback_shot0.sh --purge。王へ報告。" >&2

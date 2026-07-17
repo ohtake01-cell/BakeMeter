@@ -39,7 +39,11 @@ S
 #!/bin/bash
 printf 'ii \tlinux-image-7.0.12+shot0\n'
 S
-  chmod +x "$FIX/dpkg_none" "$FIX/dpkg_shot0"
+  cat > "$FIX/dpkg_broken" <<'S'
+#!/bin/bash
+exit 2
+S
+  chmod +x "$FIX/dpkg_none" "$FIX/dpkg_shot0" "$FIX/dpkg_broken"
   ENVV=(SHOT0_GRUB_FILE="$FIX/grub.default" SHOT0_GRUB_CFG="$FIX/grub.cfg"
         SHOT0_GRUBENV="$FIX/grubenv" SHOT0_CUSTOM="$FIX/custom.cfg"
         SHOT0_STATE_DIR="$FIX/state" SHOT0_LOCK="$FIX/lock"
@@ -88,6 +92,8 @@ env "${ENVV[@]}" bash "$PREP" --undo >/dev/null 2>&1 && chk "custom存在でundo
 rm "$FIX/custom.cfg"
 env "${ENVV[@]}" SHOT0_DPKG_QUERY="$FIX/dpkg_shot0" bash "$PREP" --undo >/dev/null 2>&1 \
   && chk "shot0 pkg残存でundo中止" false || chk "shot0 pkg残存でundo中止" true
+env "${ENVV[@]}" SHOT0_DPKG_QUERY="$FIX/dpkg_broken" bash "$PREP" --undo >/dev/null 2>&1 \
+  && chk "照会失敗でもundo中止(fail-closed)" false || chk "照会失敗でもundo中止(fail-closed)" true
 env "${ENVV[@]}" bash "$PREP" --undo >/dev/null && chk "障害物撤去後はundo成功" true || chk "障害物撤去後はundo成功" false
 
 say "T6: entry 0が別kernelなら無変更で中止"
