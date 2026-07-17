@@ -117,6 +117,38 @@ mkfix 0 "$KREL"
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "二重prepare中止" false || chk "二重prepare中止" true
 
+say "T10: entry 0が非Linux entry(memtest/chainloader型)なら中止"
+mkfix 0 "$KREL"
+cat > "$FIX/grub.cfg" <<EOF
+menuentry 'Memory test (memtest86+)' \$menuentry_id_option 'memtest-AAAA' {
+	linux16 /boot/memtest86+x64.bin
+}
+menuentry 'Ubuntu' --class ubuntu \$menuentry_id_option 'gnulinux-simple-AAAA-BBBB' {
+	linux /boot/vmlinuz-$KREL root=UUID=aaaa ro quiet
+}
+submenu 'Advanced options for Ubuntu' \$menuentry_id_option 'gnulinux-advanced-AAAA-BBBB' {
+	menuentry 'x' \$menuentry_id_option 'gnulinux-$KREL-advanced-AAAA-BBBB' {
+		linux /boot/vmlinuz-$KREL root=UUID=aaaa ro
+	}
+}
+EOF
+S0=$(snap)
+echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "非Linux entry0では中止" false || chk "非Linux entry0では中止" true
+chk "無変更" "[ '$S0' = \"\$(snap)\" ]"
+
+say "T10b: entry 0がsubmenuなら中止"
+mkfix 0 "$KREL"
+cat > "$FIX/grub.cfg" <<EOF
+submenu 'Advanced options for Ubuntu' \$menuentry_id_option 'gnulinux-advanced-AAAA-BBBB' {
+	menuentry 'x' \$menuentry_id_option 'gnulinux-$KREL-advanced-AAAA-BBBB' {
+		linux /boot/vmlinuz-$KREL root=UUID=aaaa ro
+	}
+}
+EOF
+S0=$(snap)
+echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "submenu先頭では中止" false || chk "submenu先頭では中止" true
+chk "無変更" "[ '$S0' = \"\$(snap)\" ]"
+
 say "T9: 別階層ID連結の反証(submenu外にKIDがあるgrub.cfgは中止)"
 mkfix 0 "$KREL"
 cat > "$FIX/grub.cfg" <<EOF

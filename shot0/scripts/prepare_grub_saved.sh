@@ -152,8 +152,21 @@ NEXT_NOW=$(printf '%s\n' "$ENV_LIST" | grep '^next_entry=' || true)
 SAVED_NOW=$(printf '%s\n' "$ENV_LIST" | sed -n 's/^saved_entry=//p' | head -1)
 
 CUR_KREL=$(uname -r)
-# entry 0が実際に起動するkernel(grub.cfg先頭のlinux行)と実行中kernelの一致検査(Codex v3監査P1-1)
-ENTRY0_KVER=$(grep -m1 -o 'vmlinuz-[^ ]*' "$GRUB_CFG" | head -1 | sed 's/^vmlinuz-//' || true)
+# entry 0が実際に起動するkernelを構造解析で特定(Codex v4.2監査P1: 「最初のvmlinuz」では
+# entry 0がchainloader/memtest/submenu等の時に後続entryのkernelを誤検査する)。
+# 最初のトップレベルmenuentryブロック内のlinux行だけを見る。submenu/linux行なしはsentinel。
+ENTRY0_KVER=$(awk '
+  st==0 && /^submenu /   { print "NONLINEAR"; exit }
+  st==0 && /^menuentry / { st=1; depth=1; next }
+  st==1 {
+    i = index($0, "vmlinuz-")
+    if (i) { r = substr($0, i+8); split(r, a, /[ \t]/); print a[1]; exit }
+    no = gsub(/{/, "{"); nc = gsub(/}/, "}")
+    depth += no - nc
+    if (depth <= 0) { print "NOLINUX"; exit }
+  }
+  END { if (st == 0) print "NOENTRY" }
+' "$GRUB_CFG" || true)
 DEFAULT_TARGET=$(extract_idpair || true)
 
 if [ "$MODE" = full ]; then
