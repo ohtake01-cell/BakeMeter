@@ -52,11 +52,33 @@ restore_file() { # <原本> <実機パス> <required|optional>
   else echo "  restore: $dst ← ★CRITICAL: 復元失敗。手動対応要: cp -a $src $dst" >&2; return 1; fi
 }
 
-mkdir -p "$STATE_DIR"
-if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "ERROR: 別のprepare/undoが実行中($LOCK)。二重実行しない。" >&2; exit 1
+# 実行中kernelの名前付きIDを「同一階層」から構造的に抽出(閉じ括弧を追跡し、
+# submenuを出たらcurを破棄する — 別階層IDの連結を防ぐ)。preflightとreadback検証で共用。
+extract_idpair() {
+  awk -v kver="$(uname -r)" -v sq="'" '
+    cur == "" && /^submenu / {
+      i = index($0, "gnulinux-advanced-")
+      if (i) { r = substr($0, i); q = index(r, sq); cur = substr(r, 1, q-1); depth = 1; next }
+    }
+    cur != "" {
+      s = "gnulinux-" kver "-advanced-"
+      i = index($0, s)
+      if (i) { r = substr($0, i); q = index(r, sq); print cur ">" substr(r, 1, q-1); exit }
+      no = gsub(/{/, "{"); nc = gsub(/}/, "}")
+      depth += no - nc
+      if (depth <= 0) cur = ""
+    }
+  ' "$GRUB_CFG"
+}
+
+# dry-runは完全read-only: state dirもlockも作らない(Codex v4監査P1-2)
+if [ "$MODE_ARG" != "--dry-run" ]; then
+  mkdir -p "$STATE_DIR"
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    echo "ERROR: 別のprepare/undoが実行中($LOCK)。二重実行しない。" >&2; exit 1
+  fi
 fi
-CLEAN_LOCK() { rmdir "$LOCK" 2>/dev/null || true; }
+CLEAN_LOCK() { [ "$MODE_ARG" = "--dry-run" ] || rmdir "$LOCK" 2>/dev/null || true; }
 
 # ---------------- undo ----------------
 if [ "$MODE_ARG" = "--undo" ]; then
@@ -128,16 +150,7 @@ SAVED_NOW=$(printf '%s\n' "$ENV_LIST" | sed -n 's/^saved_entry=//p' | head -1)
 CUR_KREL=$(uname -r)
 # entry 0が実際に起動するkernel(grub.cfg先頭のlinux行)と実行中kernelの一致検査(Codex v3監査P1-1)
 ENTRY0_KVER=$(grep -m1 -o 'vmlinuz-[^ ]*' "$GRUB_CFG" | head -1 | sed 's/^vmlinuz-//' || true)
-# 実行中kernelの名前付きIDを「同一階層」から構造的に抽出(Codex v3監査P2-1)
-IDPAIR=$(awk -v kver="$CUR_KREL" -v sq="'" '
-  /^submenu / { i = index($0, "gnulinux-advanced-"); if (i) { r = substr($0, i); q = index(r, sq); cur = substr(r, 1, q-1) } }
-  cur != "" {
-    s = "gnulinux-" kver "-advanced-"
-    i = index($0, s)
-    if (i) { r = substr($0, i); q = index(r, sq); print cur ">" substr(r, 1, q-1); exit }
-  }
-' "$GRUB_CFG" || true)
-DEFAULT_TARGET="$IDPAIR"
+DEFAULT_TARGET=$(extract_idpair || true)
 
 if [ "$MODE" = full ]; then
   if [ -z "$ENTRY0_KVER" ] || [ "$ENTRY0_KVER" != "$CUR_KREL" ]; then
@@ -252,7 +265,9 @@ ENV_OK=1
 ENV_LIST=$(grub-editenv "$GRUBENV" list) || { echo "[FAIL] grubenvを読めない"; V=1; ENV_OK=0; ENV_LIST=""; }
 if [ "$MODE" = full ]; then
   grep -q '^GRUB_DEFAULT=saved$' "$GRUB_FILE" && echo "[PASS] GRUB_DEFAULT=saved" || { echo "[FAIL] GRUB_DEFAULT"; V=1; }
-  grep -qF "${DEFAULT_TARGET#*>}" "$GRUB_CFG" && echo "[PASS] 再生成grub.cfgに現行kernel ID残存" || { echo "[FAIL] grub.cfgに現行kernel IDが無い"; V=1; }
+  # 再生成後も「同一階層のペア」として成立している事を同じ構造抽出で照合(存在grepでは階層を保証できない)
+  [ "$(extract_idpair || true)" = "$DEFAULT_TARGET" ] \
+    && echo "[PASS] 再生成grub.cfgでID階層ペアが同一に成立" || { echo "[FAIL] 再生成grub.cfgでID階層ペアが成立しない"; V=1; }
 fi
 if [ "$ENV_OK" -eq 1 ]; then
   printf '%s\n' "$ENV_LIST" | grep -qF "saved_entry=$DEFAULT_TARGET" \

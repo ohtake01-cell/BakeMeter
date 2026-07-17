@@ -47,12 +47,13 @@ S
 }
 snap() { sha256sum "$FIX/grub.default" "$FIX/grubenv" 2>/dev/null | awk '{print $1}' | tr '\n' ' '; }
 
-say "T1: dry-run(無変更で終了)"
+say "T1: dry-run(完全read-only: state dirもlockも作らない)"
 mkfix 0 "$KREL"; S0=$(snap)
-env "${ENVV[@]}" bash "$PREP" --dry-run >/dev/null
+env "${ENVV[@]}" SHOT0_STATE_DIR="$FIX/state-noexist" SHOT0_LOCK="$FIX/lock-noexist" bash "$PREP" --dry-run >/dev/null
 chk "exit=0で完走" "true"
 chk "ファイル無変更" "[ '$S0' = \"\$(snap)\" ]"
-chk "取引を作らない" "[ ! -f '$FIX/state/latest' ]"
+chk "state dirを作らない" "[ ! -e '$FIX/state-noexist' ]"
+chk "lockを作らない" "[ ! -e '$FIX/lock-noexist' ]"
 
 say "T2: full prepare成功(0→saved・ID固定・custom退避・next_entry解除)"
 mkfix 0 "$KREL"
@@ -109,6 +110,26 @@ say "T8: 二重実行防止(未undo取引が残っていれば中止)"
 mkfix 0 "$KREL"
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null
 echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "二重prepare中止" false || chk "二重prepare中止" true
+
+say "T9: 別階層ID連結の反証(submenu外にKIDがあるgrub.cfgは中止)"
+mkfix 0 "$KREL"
+cat > "$FIX/grub.cfg" <<EOF
+menuentry 'Ubuntu' --class ubuntu \$menuentry_id_option 'gnulinux-simple-AAAA-BBBB' {
+	linux /boot/vmlinuz-$KREL root=UUID=aaaa ro quiet
+	initrd /boot/initrd.img-$KREL
+}
+submenu 'Advanced options for Ubuntu' \$menuentry_id_option 'gnulinux-advanced-AAAA-BBBB' {
+	menuentry 'Ubuntu, with Linux 9.9.9-other' \$menuentry_id_option 'gnulinux-9.9.9-other-advanced-AAAA-BBBB' {
+		linux /boot/vmlinuz-9.9.9-other root=UUID=aaaa ro quiet
+	}
+}
+menuentry 'Outside' \$menuentry_id_option 'gnulinux-$KREL-advanced-AAAA-BBBB' {
+	linux /boot/vmlinuz-$KREL root=UUID=aaaa ro quiet
+}
+EOF
+S0=$(snap)
+echo SHOT0-PREP | env "${ENVV[@]}" bash "$PREP" >/dev/null 2>&1 && chk "submenu外KIDでは中止(連結しない)" false || chk "submenu外KIDでは中止(連結しない)" true
+chk "無変更" "[ '$S0' = \"\$(snap)\" ]"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "== prepare fixture試験 全PASS =="; else echo "== FAILあり =="; fi
