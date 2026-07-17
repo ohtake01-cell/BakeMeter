@@ -48,6 +48,13 @@ bash shot0/scripts/build_kernel_shot0.sh
 
 # 2. Codex監査へ: shot0_evidence/shot0_quirks.diff・verify_static.sh結果・deb SHA256を円卓提出
 
+# 2.5 release gate(差分buildでも新quirkの実行コードがdebに入っている事を機械証明・全PASS必須)
+bash shot0/scripts/verify_deb_shot0.sh \
+  ~/shot0_build/linux-image-*+shot0*.deb ~/shot0_build/linux-headers-*+shot0*.deb \
+  ~/shot0_build.log ~/shot0_build/linux-7.0.0
+#    → G1 buildログ順序 / G2 vmlinuz+System.map各1個同一release / G3 quirkシンボル /
+#      G4 新文字列=1・旧文字列=0 / G5 package対+接頭辞。FAILならfull build検討+円卓報告
+
 # ---- ここから先は監査合格後・王へ直前報告してから(引き金は王) ----
 
 # 3. 装填(dpkg -i + DKMS nvidia確認 + custom.cfg + grub-reboot。rebootはしない)

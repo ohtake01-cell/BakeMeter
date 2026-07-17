@@ -23,26 +23,32 @@ for f in "$IMG_DEB" "$HDR_DEB" "$BUILD_LOG" "$SRC_DIR/scripts/extract-vmlinux"; 
   [ -e "$f" ] || { echo "ERROR: $f が無い" >&2; exit 1; }
 done
 
-# G1: buildログの順序(行番号で比較)
+# G1: buildログの順序(quirks.o再コンパイル → 本体kernel最終リンク → image deb生成)
+# 最終リンクの指標は "Kernel: arch/x86/boot/bzImage is ready"(本体kernelのみ・モジュールLDと混同しない)
 L_CC=$(grep -n "CC[[:space:]]\+drivers/pci/quirks\.o" "$BUILD_LOG" | head -1 | cut -d: -f1 || true)
-L_LD=$(grep -n "LD[[:space:]]\+vmlinux\b\|LD \[M\]\|Kernel: arch/x86/boot/bzImage" "$BUILD_LOG" | tail -1 | cut -d: -f1 || true)
+L_LD=$(grep -n "Kernel: arch/x86/boot/bzImage is ready" "$BUILD_LOG" | head -1 | cut -d: -f1 || true)
 L_DEB=$(grep -n "building package 'linux-image.*shot0'" "$BUILD_LOG" | head -1 | cut -d: -f1 || true)
-if [ -n "$L_CC" ] && [ -n "$L_DEB" ] && [ "$L_CC" -lt "$L_DEB" ]; then
-  ok "G1: quirks.o再コンパイル(行$L_CC) → image deb生成(行$L_DEB)の順序"
+if [ -n "$L_CC" ] && [ -n "$L_LD" ] && [ -n "$L_DEB" ] && \
+   [ "$L_CC" -lt "$L_LD" ] && [ "$L_LD" -lt "$L_DEB" ]; then
+  ok "G1: quirks.o(行$L_CC) → bzImage最終リンク(行$L_LD) → image deb生成(行$L_DEB)の順序"
 else
-  ng "G1: buildログにquirks.o→deb生成の順序が無い (CC=$L_CC, DEB=$L_DEB)"
+  ng "G1: buildログにquirks.o→最終リンク→deb生成の順序が無い (CC=$L_CC, LD=$L_LD, DEB=$L_DEB)"
 fi
 
 # G2: debからvmlinuz/System.mapを取り出す
 TMPD=$(mktemp -d -t shot0deb.XXXXXX)
 trap 'rm -rf "$TMPD"' EXIT
 dpkg-deb -x "$IMG_DEB" "$TMPD"
+# 候補は各ちょうど1個・同一kernel releaseであること(独立選択による取り違えを防ぐ)
+N_VZ=$(find "$TMPD/boot" -maxdepth 1 -name "vmlinuz-*shot0*" | wc -l)
+N_SM=$(find "$TMPD/boot" -maxdepth 1 -name "System.map-*shot0*" | wc -l)
 VMLINUZ=$(find "$TMPD/boot" -maxdepth 1 -name "vmlinuz-*shot0*" | head -1 || true)
 SYSMAP=$(find "$TMPD/boot" -maxdepth 1 -name "System.map-*shot0*" | head -1 || true)
-if [ -n "$VMLINUZ" ] && [ -n "$SYSMAP" ]; then
-  ok "G2: deb内に $(basename "$VMLINUZ") / $(basename "$SYSMAP")"
+REL_VZ=${VMLINUZ##*/vmlinuz-}; REL_SM=${SYSMAP##*/System.map-}
+if [ "$N_VZ" -eq 1 ] && [ "$N_SM" -eq 1 ] && [ -n "$VMLINUZ" ] && [ "$REL_VZ" = "$REL_SM" ]; then
+  ok "G2: deb内に各1個・同一release ($REL_VZ)"
 else
-  ng "G2: deb内にvmlinuz/System.mapが見つからない"
+  ng "G2: vmlinuz/System.mapが各1個・同一releaseでない (vz=$N_VZ:$REL_VZ, sm=$N_SM:$REL_SM)"
 fi
 
 # G3: シンボル存在(実行コードとして登録された証拠)
@@ -61,10 +67,10 @@ if [ -n "$VMLINUZ" ]; then
   if [ -s "$VMX" ]; then
     HAS_NEW=$(strings "$VMX" | grep -c "$NEW_STR" || true)
     HAS_OLD=$(strings "$VMX" | grep -c "$OLD_STR" || true)
-    if [ "$HAS_NEW" -ge 1 ] && [ "$HAS_OLD" -eq 0 ]; then
-      ok "G4: 新文字列あり($HAS_NEW)・旧版特有文字列なし"
+    if [ "$HAS_NEW" -eq 1 ] && [ "$HAS_OLD" -eq 0 ]; then
+      ok "G4: 新文字列ちょうど1件・旧版特有文字列なし"
     else
-      ng "G4: 文字列検査不合格 (new=$HAS_NEW, old=$HAS_OLD) — 旧quirk混入の疑い"
+      ng "G4: 文字列検査不合格 (new=$HAS_NEW(1のみ可), old=$HAS_OLD(0のみ可)) — 旧quirk混入/重複の疑い"
     fi
   else
     ng "G4: extract-vmlinuxで展開できない"
@@ -74,8 +80,12 @@ fi
 # G5: Package/Version対の一致とSHA256記録
 IMG_VER=$(dpkg-deb -f "$IMG_DEB" Version); IMG_PKG=$(dpkg-deb -f "$IMG_DEB" Package)
 HDR_VER=$(dpkg-deb -f "$HDR_DEB" Version); HDR_PKG=$(dpkg-deb -f "$HDR_DEB" Package)
-if [ "$IMG_VER" = "$HDR_VER" ] && [ "${IMG_PKG#linux-image-}" = "${HDR_PKG#linux-headers-}" ]; then
-  ok "G5: image/headers対一致 ($IMG_PKG / $HDR_PKG @ $IMG_VER)"
+case "$IMG_PKG" in linux-image-*) : ;; *) ng "G5: imageのPackage名が linux-image-* でない: $IMG_PKG";; esac
+case "$HDR_PKG" in linux-headers-*) : ;; *) ng "G5: headersのPackage名が linux-headers-* でない: $HDR_PKG";; esac
+if [ "$IMG_VER" = "$HDR_VER" ] && \
+   [ "${IMG_PKG#linux-image-}" != "$IMG_PKG" ] && [ "${HDR_PKG#linux-headers-}" != "$HDR_PKG" ] && \
+   [ "${IMG_PKG#linux-image-}" = "${HDR_PKG#linux-headers-}" ]; then
+  ok "G5: image/headers対一致・接頭辞正 ($IMG_PKG / $HDR_PKG @ $IMG_VER)"
 else
   ng "G5: image/headersの対が不一致 (img=$IMG_PKG@$IMG_VER, hdr=$HDR_PKG@$HDR_VER)"
 fi
