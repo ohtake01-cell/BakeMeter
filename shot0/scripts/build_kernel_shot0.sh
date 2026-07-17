@@ -18,8 +18,9 @@ MISSING=()
 for CMD in gcc make flex bison bc fakeroot dpkg-deb rsync; do
   command -v "$CMD" >/dev/null || MISSING+=("$CMD")
 done
-# bindeb-pkgのdpkg-checkbuilddepsで要求されるパッケージも先に全数検査(逐次停止の往復を防ぐ)
-for PKG in build-essential debhelper libdw-dev libelf-dev libssl-dev libncurses-dev kmod cpio; do
+# bindeb-pkg/依存工程が要求するパッケージを先に全数検査(逐次停止の往復を防ぐ)
+# gawk=modules.builtin.ranges生成(実機で不足実証) / zstd=モジュール圧縮 / dwarves=BTF(pahole)
+for PKG in build-essential debhelper libdw-dev libelf-dev libssl-dev libncurses-dev kmod cpio gawk zstd dwarves; do
   dpkg -s "$PKG" >/dev/null 2>&1 || MISSING+=("$PKG")
 done
 if [ "${#MISSING[@]}" -gt 0 ]; then
