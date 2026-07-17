@@ -16,13 +16,21 @@ else
 fi
 
 echo "== 2. custom.cfg撤去 =="
-# Codex P1第2ラウンド: 所有判定は部分文字列でなく厳密に(arm側と同じ判定)。
-# SHOT0の生成物だけで構成されたファイルのみ削除 — 他用途エントリ混在なら触らない。
+# Codex P1第2〜3ラウンド: 所有判定は全行を許可パターンで照合(arm側と同一判定)。
+# SHOT0の生成物だけで構成された実ファイルのみ削除 — 混在・シンボリックリンクは触らない。
 custom_cfg_is_shot0_only() {
   local f=/boot/grub/custom.cfg
+  [ -L "$f" ] && return 1
   head -1 "$f" | grep -q '^# SHOT0 one-time entry' || return 1
-  [ "$(grep -c '^menuentry' "$f")" -eq 1 ] || return 1
-  grep -q "^menuentry 'SHOT0-oneshot'" "$f" || return 1
+  [ "$(grep -c "^menuentry 'SHOT0-oneshot' {$" "$f")" -eq 1 ] || return 1
+  awk '
+    /^# SHOT0/ {next}
+    /^menuentry '\''SHOT0-oneshot'\'' \{$/ {next}
+    /^[ \t]+(search|linux|initrd) / {next}
+    /^\}$/ {next}
+    /^[ \t]*$/ {next}
+    {exit 1}
+  ' "$f" || return 1
   return 0
 }
 if [ -f /boot/grub/custom.cfg ]; then

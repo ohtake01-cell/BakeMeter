@@ -40,14 +40,23 @@ if ! grep -q '^GRUB_DEFAULT=saved' /etc/default/grub; then
   echo "  王へ報告の上、GRUB_DEFAULT=saved + update-grub を先に実施すること(本スクリプトは勝手に書き換えない)" >&2
   exit 1
 fi
-# 2. 既存custom.cfgの所有判定(Codex P1第2ラウンド: 部分文字列でなく厳密判定)。
-#    「SHOT0の生成物だけで構成されたファイル」以外は上書きしない — SHOT0の文字列が
-#    混ざった他用途エントリ入りファイルを破壊しないため。install前にここで止める。
+# 2. 既存custom.cfgの所有判定(Codex P1第2〜3ラウンド: 全行を許可パターンで照合)。
+#    「SHOT0の生成物だけで構成された実ファイル」以外は上書きしない。
+#    字下げmenuentry・source・submenu等の混入、シンボリックリンクは全て不合格。
 custom_cfg_is_shot0_only() {
   local f=/boot/grub/custom.cfg
+  [ -L "$f" ] && return 1	# リンク先破壊を防ぐ: シンボリックリンクは所有と見なさない
   head -1 "$f" | grep -q '^# SHOT0 one-time entry' || return 1
-  [ "$(grep -c '^menuentry' "$f")" -eq 1 ] || return 1
-  grep -q "^menuentry 'SHOT0-oneshot'" "$f" || return 1
+  [ "$(grep -c "^menuentry 'SHOT0-oneshot' {$" "$f")" -eq 1 ] || return 1
+  # 全行がSHOT0テンプレートの許可パターンのみで構成されること
+  awk '
+    /^# SHOT0/ {next}
+    /^menuentry '\''SHOT0-oneshot'\'' \{$/ {next}
+    /^[ \t]+(search|linux|initrd) / {next}
+    /^\}$/ {next}
+    /^[ \t]*$/ {next}
+    {exit 1}
+  ' "$f" || return 1
   return 0
 }
 if [ -f /boot/grub/custom.cfg ] && ! custom_cfg_is_shot0_only; then
