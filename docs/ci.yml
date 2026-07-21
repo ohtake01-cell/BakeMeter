@@ -1,0 +1,22 @@
+# BakeMeter CI 定義(設置待ち)
+# このセッションのGitHubトークンに workflow スコープがなく .github/workflows/ に
+# 置けなかったため、ここに保管。以下へコピーすると有効化されます:
+#   .github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    paths: ["scripts/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["scripts/**", ".github/workflows/ci.yml"]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax check
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+      - name: ShellCheck
+        run: shellcheck scripts/*.sh
