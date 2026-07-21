@@ -96,6 +96,32 @@ Two design consequences, both applied in `scripts/bake_meter.sh` v2:
   quiet immediately. Unload models only on the transition into DANGER, then
   re-check `api/ps` and record honestly whether the unload actually worked.
 
+## 9. Production field data: unload bursts dominate, and correctable volume alone doesn't kill (2026-07-20/21)
+
+Two days of real production work on the same rig (image generation/editing,
+LoRA training, repeated LLM A/B tests), all running under `bake_meter.sh` v2:
+
+- **Unloading costs more than loading.** Three load + three unload cycles of a
+  13 GB image model produced **+94,372** BadDLLP total — with the *unload*
+  (VRAM teardown) bursts dominant, not the uploads. Shedding load is itself a
+  traffic burst. This is why v2 unloads only once, on the transition into
+  DANGER (#8), and why the resident-model policy (#5) beats any scheme that
+  cycles models on and off the card.
+- **A single cold model load can trip the DANGER line by itself.** A cold load
+  of an 18 GB LLM (20 GB resident in VRAM) produced `delta_5m = 5,125` — the
+  meter reported the DANGER transition on the very next 5-minute sample.
+  Later the same evening, sustained 30B-class generation reached
+  `delta_5m = 6,876` with the cumulative counter at **455,166**.
+- **Fatal 0 through all of it.** A full day of image work added ~122k
+  correctable errors and zero fatal ones. The lesson of #2 holds at production
+  scale: cumulative correctable volume is survivable; the signal that matters
+  is the interval *rate*, and how long it stays elevated (#6).
+
+Operational conclusion, now backed by production data rather than a one-night
+experiment: keep the workhorse model resident (lease it, don't cycle it), let
+the interval-delta meter catch cold loads, and treat every load/unload as a
+deliberate, metered event.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not

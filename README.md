@@ -69,6 +69,11 @@ Fresh data point from our machine (2026-07-12): **8 model load/unload cycles
 (17–18 GB each) produced +228k BadDLLP in 25 minutes** — model swapping is by
 far the biggest single trigger we have measured. Keep your model resident.
 
+Production follow-up (2026-07-20): 3 load + 3 unload cycles of a 13 GB model
+cost **+94k BadDLLP with the unload bursts dominant**, and a single cold 18 GB
+load tripped the 5,000/5 min danger line on its own — all correctable, zero
+fatal. Details in [findings #9](docs/findings.md).
+
 ## Status / contributing
 
 Born 2026-07-10 from a night of controlled experiments on a Mac Pro 2013

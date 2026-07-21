@@ -12,8 +12,8 @@ ALERT=~/BAKE_ALERT.txt
 STATE=~/freeze_test/bake_meter_state
 JSTATE=~/local-ai-stack/data/open-webui/system/bake_state.json
 AERDEV=/sys/bus/pci/devices/0000:18:01.0/aer_dev_correctable
-WARN_5M=1000
-DANGER_5M=5000
+WARN_5M=${WARN_5M:-1000}
+DANGER_5M=${DANGER_5M:-5000}
 
 TS=$(date "+%Y-%m-%d %H:%M")
 EPOCH=$(date +%s)
