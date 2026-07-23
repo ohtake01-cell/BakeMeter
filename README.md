@@ -25,14 +25,22 @@ load before the crash.
 MODEL=llama3:8b bash scripts/burst_test.sh
 ```
 
-`bake_meter.sh` (v2) reads the **real sysfs AER counters** and logs the 5-minute
-delta to CSV: it warns at **1,000 errors/5 min** and at **5,000/5 min** unloads
-all Ollama models once on the transition to danger, then verifies the unload
-actually happened (traffic stops, freeze avoided; models reload on next use).
-If sysfs AER is unavailable it falls back to `journalctl` counting (50/h warn,
-200/h danger) — but note journalctl undercounts by ~34x due to rate-limit
-suppression (findings #8). Thresholds are configurable via environment variables.
-A container-visible `bake_state.json` is written for gating downstream apps.
+`bake_meter.sh` (v2.1) reads the **real sysfs AER counters** and logs the
+5-minute delta to CSV: it warns at **1,000 errors/5 min** and at **5,000/5 min**
+unloads all Ollama models once on the transition to DANGER, then verifies the
+unload actually happened (traffic stops, freeze avoided; models reload on next
+use). After DANGER it holds a **COOLDOWN** level for 30 min — and beyond that
+until the recent samples are quiet — because the danger state outlives the
+traffic: we measured a fatal error striking ~30 min *after* the link went idle
+(findings #6). If sysfs AER is unavailable it falls back to `journalctl`
+counting (50/h warn, 200/h danger) — but note journalctl undercounts by ~34x
+due to rate-limit suppression (findings #8). The fallback never overwrites the
+sysfs baseline, so a device that disappears and comes back (exactly what a
+GPU drop-off looks like) cannot fake a burst. All thresholds and paths are
+configurable via `BM_*` environment variables — see the script header.
+An atomically-written `bake_state.json` is published every run for gating
+downstream apps; `test_bake_meter.sh` is a 13-case regression suite that runs
+the real script against a fake sysfs tree (no root, no GPU needed).
 
 ## Near-zero-freeze operating policy (from measured data)
 

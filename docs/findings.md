@@ -96,6 +96,34 @@ Two design consequences, both applied in `scripts/bake_meter.sh` v2:
   quiet immediately. Unload models only on the transition into DANGER, then
   re-check `api/ps` and record honestly whether the unload actually worked.
 
+## 9. Unloading a model is a bigger burst than generating with it (2026-07-12)
+
+We already knew loading a model costs errors (§2). Measured on the sysfs
+counters, **unloading is worse** — and it is the single largest error source
+we have logged.
+
+In one controlled image run: generating an image (model load + 457 s of work)
+cost **+3,084** BadDLLP. The cleanup `/free` that unloaded the 19 GB model
+immediately after cost **+44,017** in the next 5-minute window — **~14x the
+generation itself**, and enough to re-enter DANGER on its own.
+
+Every DANGER episode we logged that day traced back to a model
+unload/eviction burst, not to generation: an 8x load/unload A/B sweep, a
+19 GB `/free`, back-to-back model evictions. Generation alone stayed in the
+hundreds-per-image (WARN at most).
+
+Consequences:
+
+- **Don't unload to "be safe" — the unload is the risk.** Keep the workhorse
+  (and, per session, the image) model resident; let it idle rather than
+  evicting it. A resident model is a quiet link; a model swap is a storm.
+- BakeMeter's own DANGER shed (unloading all models) is a deliberate exception:
+  it accepts one unload burst to *stop all future traffic* when a fatal error
+  looks imminent. Paying one storm to prevent the rest is the right trade —
+  but only on the transition into DANGER, never routinely.
+- If a pipeline evicts and re-stages a model per request, that eviction loop —
+  not the compute — is what's cooking the link.
+
 ## Mac Pro 2013 specific notes
 
 - The eGPU boots only on the bottom TB bus; hot-plug after boot is not
