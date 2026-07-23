@@ -113,7 +113,7 @@ gone                                              # eGPU drops off; sibling rema
 meter_auto; check "pinned device gone = fallback, not a phantom reset" "0,OK,journalctl"
 counter 100000                                    # eGPU returns, same lifetime counter
 meter_auto; check "eGPU returns = OK, no false DANGER from sibling" "0,OK,sysfs"
-rm -rf "$SYS/$DEV2"
+rm -rf "${SYS:?}/$DEV2"
 
 echo "# P2 (Codex): reboot with a post-boot storm still fires (not discarded)"
 fresh; counter 100000; meter                      # baseline
@@ -151,7 +151,7 @@ meter_auto; check "positive count = pin the busy device, baseline" "0,OK,sysfs_f
 read -r _ _ _ PINNED < "$D/bake_meter.state"
 if [ "$PINNED" = "$DEV" ]; then PASS=$((PASS+1)); echo "ok   pins the device that actually shows errors ($PINNED)"
 else FAIL=$((FAIL+1)); echo "FAIL wrong pinned device: [$PINNED]"; fi
-rm -rf "$SYS/$DEV2"
+rm -rf "${SYS:?}/$DEV2"
 
 echo "# P2 (Codex): a legacy v2 baseline file is migrated on upgrade"
 fresh
